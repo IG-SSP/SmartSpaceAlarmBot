@@ -20,11 +20,12 @@ from .cli import (
     env,
     fetch_controllers,
     find_changes,
-    format_notification_body,
     load_state,
     remote_access_url,
     save_state,
 )
+
+CONTROLLERS_PAGE_SIZE = 12
 
 
 @dataclass(frozen=True)
@@ -75,23 +76,33 @@ def parse_allowed_user_ids(raw: str) -> set[int]:
 def run_bot(wb_config: Config, tg_config: TelegramConfig) -> int:
     offset: int | None = None
     next_check_at = 0.0
+    startup_check_done = False
     print("telegram bot started")
 
     while True:
         now = time.time()
         if now >= next_check_at:
-            check_and_notify(wb_config, tg_config)
+            check_and_notify(wb_config, tg_config, include_current_offline=not startup_check_done)
+            startup_check_done = True
             next_check_at = now + wb_config.poll_interval_seconds
 
-        updates = telegram_request(tg_config, "getUpdates", {"timeout": 10, "offset": offset})
+        try:
+            updates = telegram_request(tg_config, "getUpdates", {"timeout": 10, "offset": offset})
+        except Exception as exc:
+            print(f"telegram getUpdates failed: {exc}", file=sys.stderr)
+            time.sleep(5)
+            continue
         for update in updates.get("result", []):
             update_id = update.get("update_id")
             if isinstance(update_id, int):
                 offset = update_id + 1
-            handle_update(wb_config, tg_config, update)
+            try:
+                handle_update(wb_config, tg_config, update)
+            except Exception as exc:
+                print(f"update handling failed: {exc}", file=sys.stderr)
 
 
-def check_and_notify(wb_config: Config, tg_config: TelegramConfig) -> None:
+def check_and_notify(wb_config: Config, tg_config: TelegramConfig, *, include_current_offline: bool = False) -> None:
     try:
         controllers = fetch_controllers(wb_config)
         previous = load_state(wb_config.state_file)
@@ -108,17 +119,21 @@ def check_and_notify(wb_config: Config, tg_config: TelegramConfig) -> None:
         print(f"background check failed: {exc}", file=sys.stderr)
         return
 
+    if include_current_offline and wb_config.notify_on_first_run:
+        known_changes = {controller.controller_id for controller, _ in changes}
+        changes.extend((controller, None) for controller in controllers if not controller.online and controller.controller_id not in known_changes)
+
     for controller, old_online in changes:
-        text = html_pre(format_notification_body(controller, old_online))
+        text = html_pre(format_telegram_notification_body(controller, old_online))
         keyboard = inline_keyboard(
             [
-                [url_button("Open remote access", remote_access_url(controller.controller_id))],
-                [callback_button("Refresh controller", f"controller:{controller.controller_id}")],
-                [callback_button("All controllers", "status:all")],
+                [url_button("Открыть веб-интерфейс", remote_access_url(controller.controller_id))],
+                [callback_button("Обновить объект", f"controller:{controller.controller_id}")],
+                [callback_button("Все объекты", "status:all:0")],
             ]
         )
         for user_id in get_allowed_user_ids(tg_config):
-            send_message(tg_config, user_id, text, keyboard)
+            safe_send_message(tg_config, user_id, text, keyboard)
 
 
 def handle_update(wb_config: Config, tg_config: TelegramConfig, update: dict[str, Any]) -> None:
@@ -138,12 +153,12 @@ def handle_update(wb_config: Config, tg_config: TelegramConfig, update: dict[str
         return
 
     if not is_allowed(tg_config, user_id):
-        send_message(tg_config, chat_id, f"Access denied.\nYour Telegram user id: <code>{user_id}</code>")
+        send_message(tg_config, chat_id, f"Доступ не разрешен.\nВаш Telegram ID: <code>{user_id}</code>")
         return
 
     text = str(message.get("text") or "").strip()
     if text.startswith("/id"):
-        send_message(tg_config, chat_id, f"Your Telegram user id: <code>{user_id}</code>")
+        send_message(tg_config, chat_id, f"Ваш Telegram ID: <code>{user_id}</code>")
     elif text.startswith("/users"):
         require_admin_or_reply(tg_config, chat_id, user_id, lambda: send_users(tg_config, chat_id))
     elif text.startswith("/adduser"):
@@ -179,17 +194,17 @@ def handle_callback(wb_config: Config, tg_config: TelegramConfig, callback: dict
             telegram_request(
                 tg_config,
                 "answerCallbackQuery",
-                {"callback_query_id": callback_id, "text": "Access denied", "show_alert": True},
+            {"callback_query_id": callback_id, "text": "Доступ не разрешен", "show_alert": True},
             )
         return
 
     if not isinstance(chat_id, int) or not isinstance(message_id, int):
         return
 
-    if data == "status:all":
-        edit_status(wb_config, tg_config, chat_id, message_id, only_offline=False)
-    elif data == "status:offline":
-        edit_status(wb_config, tg_config, chat_id, message_id, only_offline=True)
+    if data.startswith("status:all"):
+        edit_status(wb_config, tg_config, chat_id, message_id, only_offline=False, page=parse_page(data))
+    elif data.startswith("status:offline"):
+        edit_status(wb_config, tg_config, chat_id, message_id, only_offline=True, page=parse_page(data))
     elif data == "admin:users" and is_admin(tg_config, user_id):
         edit_message(tg_config, chat_id, message_id, format_users(tg_config), admin_keyboard())
     elif data == "admin:backup" and is_admin(tg_config, user_id):
@@ -208,18 +223,18 @@ def send_status(
     try:
         controllers = fetch_controllers(wb_config)
     except Exception as exc:
-        send_message(tg_config, chat_id, f"Could not fetch controller status:\n<code>{html.escape(str(exc))}</code>")
+        send_message(tg_config, chat_id, f"Не удалось получить статус контроллеров:\n<code>{html.escape(str(exc))}</code>")
         return
 
     if serial_or_name:
         controller = find_controller(controllers, serial_or_name)
         if controller is None:
-            send_message(tg_config, chat_id, f"Controller not found: <code>{html.escape(serial_or_name)}</code>")
+            send_message(tg_config, chat_id, f"Объект не найден: <code>{html.escape(serial_or_name)}</code>")
             return
         send_message(tg_config, chat_id, format_controller_detail(controller), controller_keyboard(controller))
         return
 
-    send_message(tg_config, chat_id, format_controller_list(controllers), controllers_keyboard(controllers))
+    send_message(tg_config, chat_id, format_controller_list(controllers, page=0), controllers_keyboard(controllers, page=0, mode="all"))
 
 
 def edit_status(
@@ -229,15 +244,23 @@ def edit_status(
     message_id: int,
     *,
     only_offline: bool,
+    page: int = 0,
 ) -> None:
     try:
         controllers = fetch_controllers(wb_config)
     except Exception as exc:
-        edit_message(tg_config, chat_id, message_id, f"Could not fetch controller status:\n<code>{html.escape(str(exc))}</code>")
+        edit_message(tg_config, chat_id, message_id, f"Не удалось получить статус контроллеров:\n<code>{html.escape(str(exc))}</code>")
         return
 
     visible = [controller for controller in controllers if not controller.online] if only_offline else controllers
-    edit_message(tg_config, chat_id, message_id, format_controller_list(visible), controllers_keyboard(visible))
+    mode = "offline" if only_offline else "all"
+    edit_message(
+        tg_config,
+        chat_id,
+        message_id,
+        format_controller_list(visible, page=page),
+        controllers_keyboard(visible, page=page, mode=mode),
+    )
 
 
 def edit_controller(
@@ -250,53 +273,74 @@ def edit_controller(
     try:
         controllers = fetch_controllers(wb_config)
     except Exception as exc:
-        edit_message(tg_config, chat_id, message_id, f"Could not fetch controller status:\n<code>{html.escape(str(exc))}</code>")
+        edit_message(tg_config, chat_id, message_id, f"Не удалось получить статус контроллеров:\n<code>{html.escape(str(exc))}</code>")
         return
 
     controller = find_controller(controllers, serial_number)
     if controller is None:
-        edit_message(tg_config, chat_id, message_id, f"Controller not found: <code>{html.escape(serial_number)}</code>")
+        edit_message(tg_config, chat_id, message_id, f"Объект не найден: <code>{html.escape(serial_number)}</code>")
         return
     edit_message(tg_config, chat_id, message_id, format_controller_detail(controller), controller_keyboard(controller))
 
 
-def format_controller_list(controllers: list[Controller]) -> str:
+def format_controller_list(controllers: list[Controller], *, page: int = 0) -> str:
     total = len(controllers)
     down = len([controller for controller in controllers if not controller.online])
     up = total - down
+    page_count = max(1, (total + CONTROLLERS_PAGE_SIZE - 1) // CONTROLLERS_PAGE_SIZE)
+    page = clamp_page(page, page_count)
     lines = [
-        "<b>Wirenboard.cloud status</b>",
-        f"Total: <b>{total}</b>",
-        f"Online: <b>{up}</b>",
-        f"Offline: <b>{down}</b>",
+        "<b>Статус объектов Wirenboard.cloud</b>",
+        f"Всего: <b>{total}</b>",
+        f"В сети: <b>{up}</b>",
+        f"Не в сети: <b>{down}</b>",
+        f"Страница: <b>{page + 1}/{page_count}</b>",
         "",
     ]
 
     if not controllers:
-        lines.append("No controllers to show.")
+        lines.append("Нет объектов для отображения.")
         return "\n".join(lines)
 
-    for controller in sorted(controllers, key=lambda item: (item.online, item.name.lower())):
-        status = "ONLINE" if controller.online else "OFFLINE"
+    sorted_controllers = sorted(controllers, key=lambda item: (item.online, item.name.lower()))
+    start = page * CONTROLLERS_PAGE_SIZE
+    for controller in sorted_controllers[start : start + CONTROLLERS_PAGE_SIZE]:
+        status = "В СЕТИ" if controller.online else "НЕ В СЕТИ"
         lines.append(f"<b>{status}</b> {html.escape(controller.name)}")
         lines.append(f"<code>{html.escape(controller.controller_id)}</code>")
         if controller.last_seen:
-            lines.append(f"Last ping: {html.escape(controller.last_seen)}")
+            lines.append(f"Последний пинг: {html.escape(controller.last_seen)}")
         lines.append("")
 
     return "\n".join(lines).strip()
 
 
 def format_controller_detail(controller: Controller) -> str:
-    status = "ONLINE" if controller.online else "OFFLINE"
+    status = "В сети" if controller.online else "Не в сети"
     lines = [
         f"<b>{html.escape(controller.name)}</b>",
-        f"Status: <b>{status}</b>",
-        f"Serial: <code>{html.escape(controller.controller_id)}</code>",
+        f"Статус: <b>{status}</b>",
+        f"Серийный номер: <code>{html.escape(controller.controller_id)}</code>",
     ]
     if controller.last_seen:
-        lines.append(f"Last ping: {html.escape(controller.last_seen)}")
-    lines.append(f"Remote access: {html.escape(remote_access_url(controller.controller_id))}")
+        lines.append(f"Последний пинг: {html.escape(controller.last_seen)}")
+    lines.append(f"Веб-интерфейс: {html.escape(remote_access_url(controller.controller_id))}")
+    return "\n".join(lines)
+
+
+def format_telegram_notification_body(controller: Controller, old_online: bool | None) -> str:
+    status = "В СЕТИ" if controller.online else "НЕ В СЕТИ"
+    previous_text = "неизвестно" if old_online is None else ("в сети" if old_online else "не в сети")
+    current_text = "в сети" if controller.online else "не в сети"
+    lines = [
+        controller.name,
+        f"Статус: {status}",
+        f"Изменение: {previous_text} -> {current_text}",
+        f"Серийный номер: {controller.controller_id}",
+    ]
+    if controller.last_seen:
+        lines.append(f"Последний пинг: {controller.last_seen}")
+    lines.append(f"Веб-интерфейс: {remote_access_url(controller.controller_id)}")
     return "\n".join(lines)
 
 
@@ -314,15 +358,15 @@ def find_controller(controllers: list[Controller], serial_or_name: str) -> Contr
 def help_text() -> str:
     return "\n".join(
         [
-            "<b>Wirenboard Cloud Watcher</b>",
+            "<b>SmartSpaceAlarmBot</b>",
             "",
-            "/status - all controllers",
-            "/status SERIAL - one controller",
-            "/id - show your Telegram user id",
-            "/users - approved users (admin)",
-            "/adduser ID - approve user (admin)",
-            "/deluser ID - remove user (admin)",
-            "/backup - download backup archive (admin)",
+            "/status - все объекты",
+            "/status SERIAL - один объект",
+            "/id - показать ваш Telegram ID",
+            "/users - пользователи (админ)",
+            "/adduser ID - разрешить пользователя (админ)",
+            "/deluser ID - удалить пользователя (админ)",
+            "/backup - скачать резервную копию (админ)",
         ]
     )
 
@@ -330,19 +374,35 @@ def help_text() -> str:
 def main_menu_keyboard() -> dict[str, Any]:
     return inline_keyboard(
         [
-            [callback_button("All controllers", "status:all")],
-            [callback_button("Offline only", "status:offline")],
-            [callback_button("Users", "admin:users"), callback_button("Backup", "admin:backup")],
+            [callback_button("Все объекты", "status:all:0")],
+            [callback_button("Только упавшие", "status:offline:0")],
+            [callback_button("Пользователи", "admin:users"), callback_button("Резервная копия", "admin:backup")],
         ]
     )
 
 
-def controllers_keyboard(controllers: list[Controller]) -> dict[str, Any]:
+def controllers_keyboard(controllers: list[Controller], *, page: int = 0, mode: str = "all") -> dict[str, Any]:
+    page_count = max(1, (len(controllers) + CONTROLLERS_PAGE_SIZE - 1) // CONTROLLERS_PAGE_SIZE)
+    page = clamp_page(page, page_count)
     rows = [
-        [callback_button("Refresh all", "status:all"), callback_button("Offline only", "status:offline")],
+        [callback_button("Обновить", f"status:{mode}:{page}")],
+        [callback_button("Все", "status:all:0"), callback_button("Упавшие", "status:offline:0")],
     ]
-    for controller in sorted(controllers, key=lambda item: (item.online, item.name.lower()))[:50]:
-        label = f"{'UP' if controller.online else 'DOWN'} {controller.name}"
+    if page_count > 1:
+        prev_page = max(0, page - 1)
+        next_page = min(page_count - 1, page + 1)
+        rows.append(
+            [
+                callback_button("Назад", f"status:{mode}:{prev_page}"),
+                callback_button(f"{page + 1}/{page_count}", f"status:{mode}:{page}"),
+                callback_button("Вперед", f"status:{mode}:{next_page}"),
+            ]
+        )
+
+    sorted_controllers = sorted(controllers, key=lambda item: (item.online, item.name.lower()))
+    start = page * CONTROLLERS_PAGE_SIZE
+    for controller in sorted_controllers[start : start + CONTROLLERS_PAGE_SIZE]:
+        label = f"{'OK' if controller.online else 'ALARM'} {controller.name}"
         rows.append([callback_button(label[:60], f"controller:{controller.controller_id}")])
     return inline_keyboard(rows)
 
@@ -350,11 +410,25 @@ def controllers_keyboard(controllers: list[Controller]) -> dict[str, Any]:
 def controller_keyboard(controller: Controller) -> dict[str, Any]:
     return inline_keyboard(
         [
-            [url_button("Open remote access", remote_access_url(controller.controller_id))],
-            [callback_button("Refresh", f"controller:{controller.controller_id}")],
-            [callback_button("All controllers", "status:all")],
+            [url_button("Открыть веб-интерфейс", remote_access_url(controller.controller_id))],
+            [callback_button("Обновить", f"controller:{controller.controller_id}")],
+            [callback_button("Все объекты", "status:all:0")],
         ]
     )
+
+
+def parse_page(callback_data: str) -> int:
+    parts = callback_data.split(":")
+    if len(parts) < 3:
+        return 0
+    try:
+        return int(parts[2])
+    except ValueError:
+        return 0
+
+
+def clamp_page(page: int, page_count: int) -> int:
+    return max(0, min(page, page_count - 1))
 
 
 def inline_keyboard(rows: list[list[dict[str, str]]]) -> dict[str, Any]:
@@ -383,7 +457,7 @@ def is_admin(tg_config: TelegramConfig, user_id: int) -> bool:
 
 def require_admin_or_reply(tg_config: TelegramConfig, chat_id: int, user_id: int, action) -> None:
     if not is_admin(tg_config, user_id):
-        send_message(tg_config, chat_id, "Admin access required.")
+        send_message(tg_config, chat_id, "Нужны права администратора.")
         return
     action()
 
@@ -430,9 +504,9 @@ def send_users(tg_config: TelegramConfig, chat_id: int) -> None:
 
 def format_users(tg_config: TelegramConfig) -> str:
     access = load_user_access(tg_config)
-    lines = ["<b>Approved users</b>", ""]
+    lines = ["<b>Разрешенные пользователи</b>", ""]
     for user_id in sorted(access["allowed"]):
-        role = "admin" if user_id in access["admins"] else "user"
+        role = "админ" if user_id in access["admins"] else "пользователь"
         lines.append(f"<code>{user_id}</code> - {role}")
     return "\n".join(lines)
 
@@ -440,28 +514,28 @@ def format_users(tg_config: TelegramConfig) -> str:
 def add_user_command(tg_config: TelegramConfig, chat_id: int, text: str) -> None:
     user_id = parse_user_id_argument(text)
     if user_id is None:
-        send_message(tg_config, chat_id, "Usage: <code>/adduser 123456789</code>")
+        send_message(tg_config, chat_id, "Формат: <code>/adduser 123456789</code>")
         return
 
     access = load_user_access(tg_config)
     access["allowed"].add(user_id)
     save_user_access(tg_config, access)
-    send_message(tg_config, chat_id, f"User approved: <code>{user_id}</code>", admin_keyboard())
+    send_message(tg_config, chat_id, f"Пользователь разрешен: <code>{user_id}</code>", admin_keyboard())
 
 
 def remove_user_command(tg_config: TelegramConfig, chat_id: int, text: str) -> None:
     user_id = parse_user_id_argument(text)
     if user_id is None:
-        send_message(tg_config, chat_id, "Usage: <code>/deluser 123456789</code>")
+        send_message(tg_config, chat_id, "Формат: <code>/deluser 123456789</code>")
         return
 
     access = load_user_access(tg_config)
     if user_id in access["admins"]:
-        send_message(tg_config, chat_id, "Admin users cannot be removed through /deluser. Edit .env to change admins.")
+        send_message(tg_config, chat_id, "Админов нельзя удалить через /deluser. Измените TELEGRAM_ADMIN_USER_IDS в .env.")
         return
     access["allowed"].discard(user_id)
     save_user_access(tg_config, access)
-    send_message(tg_config, chat_id, f"User removed: <code>{user_id}</code>", admin_keyboard())
+    send_message(tg_config, chat_id, f"Пользователь удален: <code>{user_id}</code>", admin_keyboard())
 
 
 def parse_user_id_argument(text: str) -> int | None:
@@ -477,9 +551,9 @@ def parse_user_id_argument(text: str) -> int | None:
 def admin_keyboard() -> dict[str, Any]:
     return inline_keyboard(
         [
-            [callback_button("Users", "admin:users")],
-            [callback_button("Download backup", "admin:backup")],
-            [callback_button("All controllers", "status:all")],
+            [callback_button("Пользователи", "admin:users")],
+            [callback_button("Скачать backup", "admin:backup")],
+            [callback_button("Все объекты", "status:all:0")],
         ]
     )
 
@@ -487,9 +561,9 @@ def admin_keyboard() -> dict[str, Any]:
 def send_backup(tg_config: TelegramConfig, chat_id: int) -> None:
     try:
         backup_path = create_bot_backup(Path.cwd(), tg_config.backup_dir)
-        send_document(tg_config, chat_id, backup_path, "Backup archive. Keep it private: it contains .env tokens.")
+        send_document(tg_config, chat_id, backup_path, "Резервная копия. Храните осторожно: внутри .env с токенами.")
     except Exception as exc:
-        send_message(tg_config, chat_id, f"Could not create backup:\n<code>{html.escape(str(exc))}</code>")
+        send_message(tg_config, chat_id, f"Не удалось создать backup:\n<code>{html.escape(str(exc))}</code>")
 
 
 def create_bot_backup(project_dir: Path, backup_dir: Path) -> Path:
@@ -532,6 +606,20 @@ def send_message(
     if reply_markup:
         payload["reply_markup"] = reply_markup
     telegram_request(tg_config, "sendMessage", payload)
+
+
+def safe_send_message(
+    tg_config: TelegramConfig,
+    chat_id: int,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        send_message(tg_config, chat_id, text, reply_markup)
+        return True
+    except Exception as exc:
+        print(f"sendMessage to {chat_id} failed: {exc}", file=sys.stderr)
+        return False
 
 
 def send_document(tg_config: TelegramConfig, chat_id: int, path: Path, caption: str = "") -> None:

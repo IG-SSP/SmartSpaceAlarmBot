@@ -10,8 +10,10 @@ from wb_cloud_watcher.bot import (
     find_controller,
     format_controller_detail,
     format_controller_list,
+    format_telegram_notification_body,
     get_allowed_user_ids,
     get_admin_user_ids,
+    parse_page,
     remove_user_command,
     parse_allowed_user_ids,
 )
@@ -39,7 +41,7 @@ class BotTests(unittest.TestCase):
             last_seen="2026-06-10T12:00:00Z",
         )
 
-        self.assertIn("Status: <b>OFFLINE</b>", format_controller_detail(controller))
+        self.assertIn("Статус: <b>Не в сети</b>", format_controller_detail(controller))
         self.assertIn("https://wirenboard.cloud/connect/http/ABC123/", format_controller_detail(controller))
 
     def test_format_controller_list_shows_summary(self):
@@ -50,16 +52,30 @@ class BotTests(unittest.TestCase):
 
         text = format_controller_list(controllers)
 
-        self.assertIn("Total: <b>2</b>", text)
-        self.assertIn("Online: <b>1</b>", text)
-        self.assertIn("Offline: <b>1</b>", text)
+        self.assertIn("Всего: <b>2</b>", text)
+        self.assertIn("В сети: <b>1</b>", text)
+        self.assertIn("Не в сети: <b>1</b>", text)
 
     def test_controllers_keyboard_has_controller_buttons(self):
         controllers = [Controller(controller_id="ABC123", name="Boiler room", online=True)]
 
         keyboard = controllers_keyboard(controllers)
 
-        self.assertEqual(keyboard["inline_keyboard"][1][0]["callback_data"], "controller:ABC123")
+        self.assertEqual(keyboard["inline_keyboard"][2][0]["callback_data"], "controller:ABC123")
+
+    def test_controllers_keyboard_paginates_controller_buttons(self):
+        controllers = [Controller(controller_id=f"WB{i:03}", name=f"Controller {i:03}", online=True) for i in range(20)]
+
+        keyboard = controllers_keyboard(controllers, page=1, mode="all")
+
+        self.assertEqual(keyboard["inline_keyboard"][2][0]["callback_data"], "status:all:0")
+        self.assertEqual(keyboard["inline_keyboard"][2][2]["callback_data"], "status:all:1")
+        self.assertEqual(keyboard["inline_keyboard"][3][0]["callback_data"], "controller:WB012")
+
+    def test_parse_page_defaults_to_zero(self):
+        self.assertEqual(parse_page("status:all:3"), 3)
+        self.assertEqual(parse_page("status:all"), 0)
+        self.assertEqual(parse_page("status:all:nope"), 0)
 
     def test_user_access_initializes_from_env_sets(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,7 +109,7 @@ class BotTests(unittest.TestCase):
                 remove_user_command(tg_config, 100, "/deluser 3")
 
             self.assertEqual(get_allowed_user_ids(tg_config), {1, 2})
-            self.assertIn("Admin users cannot be removed", messages[1][2])
+            self.assertIn("Админов нельзя удалить", messages[1][2])
 
     def test_build_multipart_body_contains_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,6 +121,19 @@ class BotTests(unittest.TestCase):
         self.assertIn(b'name="chat_id"', body)
         self.assertIn(b'filename="backup.tar.gz"', body)
         self.assertIn(b"backup", body)
+
+    def test_format_telegram_notification_body_is_russian(self):
+        controller = Controller(
+            controller_id="ABC123",
+            name="Boiler room",
+            online=False,
+            last_seen="2026-06-10T12:00:00Z",
+        )
+
+        text = format_telegram_notification_body(controller, old_online=True)
+
+        self.assertIn("Статус: НЕ В СЕТИ", text)
+        self.assertIn("Изменение: в сети -> не в сети", text)
 
 
 if __name__ == "__main__":
