@@ -63,6 +63,7 @@ sudo python3 install.py
 
 ```dotenv
 WB_TOKEN=...
+WB_AUTH_SCHEME=Bearer
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ADMIN_USER_IDS=111111111
 TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
@@ -72,6 +73,14 @@ POLL_INTERVAL_SECONDS=60
 ```
 
 `WB_TOKEN` и `TELEGRAM_BOT_TOKEN` нельзя коммитить в GitHub.
+
+Для JWT access token, который выдает `/api/v1/auth/token/`, используется:
+
+```dotenv
+WB_AUTH_SCHEME=Bearer
+```
+
+Если Wirenboard.cloud вернет `401`, клиент автоматически попробует второй вариант `Authorization: Token ...`.
 
 ## Получение WB_TOKEN
 

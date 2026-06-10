@@ -1,13 +1,16 @@
 import unittest
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 from wb_cloud_watcher.cli import (
     Controller,
     Config,
+    fallback_auth_header,
     fetch_controller_payloads,
     find_changes,
     format_notification_body,
+    format_http_error,
     get_path,
     parse_online,
     request_token,
@@ -108,6 +111,23 @@ class CliTests(unittest.TestCase):
             timeout_seconds=30,
         )
         print_.assert_any_call("WB_TOKEN=access-token")
+
+    def test_fallback_auth_header_switches_bearer_and_token(self):
+        self.assertEqual(
+            fallback_auth_header("Authorization: Bearer abc"),
+            "Authorization: Token abc",
+        )
+        self.assertEqual(
+            fallback_auth_header("Authorization: Token abc"),
+            "Authorization: Bearer abc",
+        )
+
+    def test_format_http_error_includes_response_body(self):
+        response = Mock()
+        response.read.return_value = b'{"detail":"bad token"}'
+        error = HTTPError("https://example.test", 401, "Unauthorized", {}, response)
+
+        self.assertEqual(str(format_http_error("API", error)), 'API returned HTTP 401: {"detail":"bad token"}')
 
 
 if __name__ == "__main__":

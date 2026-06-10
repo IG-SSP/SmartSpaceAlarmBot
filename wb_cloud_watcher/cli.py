@@ -175,19 +175,29 @@ def fetch_controller_payloads(config: Config) -> list[dict[str, Any]]:
 
 
 def get_json(url: str, auth_header: str, timeout_seconds: int) -> Any:
+    try:
+        return get_json_with_header(url, auth_header, timeout_seconds)
+    except HTTPError as exc:
+        fallback_header = fallback_auth_header(auth_header)
+        if exc.code != 401 or not fallback_header:
+            raise format_http_error("API", exc) from exc
+        try:
+            return get_json_with_header(url, fallback_header, timeout_seconds)
+        except HTTPError as fallback_exc:
+            raise format_http_error("API", fallback_exc) from fallback_exc
+    except URLError as exc:
+        raise RuntimeError(f"API request failed: {exc.reason}") from exc
+
+
+def get_json_with_header(url: str, auth_header: str, timeout_seconds: int) -> Any:
     headers = {"Accept": "application/json", "User-Agent": "wb-cloud-watcher/0.1"}
     if auth_header:
         name, value = parse_header(auth_header)
         headers[name] = value
 
     request = Request(url, headers=headers)
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            body = response.read().decode("utf-8")
-    except HTTPError as exc:
-        raise RuntimeError(f"API returned HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"API request failed: {exc.reason}") from exc
+    with urlopen(request, timeout=timeout_seconds) as response:
+        body = response.read().decode("utf-8")
 
     try:
         return json.loads(body)
@@ -335,7 +345,8 @@ def read_config() -> Config:
     auth_header = env("WB_AUTH_HEADER")
     token = env("WB_TOKEN")
     if token and not auth_header:
-        auth_header = f"Authorization: Token {token}"
+        auth_scheme = env("WB_AUTH_SCHEME", "Bearer")
+        auth_header = f"Authorization: {auth_scheme} {token}"
 
     return Config(
         api_url=api_url,
@@ -400,6 +411,28 @@ def parse_header(raw: str) -> tuple[str, str]:
     if not name or not value:
         raise ValueError("WB_AUTH_HEADER must include both header name and value")
     return name, value
+
+
+def fallback_auth_header(raw: str) -> str:
+    try:
+        name, value = parse_header(raw)
+    except ValueError:
+        return ""
+    if name.lower() != "authorization":
+        return ""
+    if value.startswith("Bearer "):
+        return f"{name}: Token {value.removeprefix('Bearer ')}"
+    if value.startswith("Token "):
+        return f"{name}: Bearer {value.removeprefix('Token ')}"
+    return ""
+
+
+def format_http_error(prefix: str, exc: HTTPError) -> RuntimeError:
+    details = exc.read().decode("utf-8", errors="replace")
+    message = f"{prefix} returned HTTP {exc.code}"
+    if details:
+        message = f"{message}: {details}"
+    return RuntimeError(message)
 
 
 def get_path(value: Any, path: str, default: Any = ...):

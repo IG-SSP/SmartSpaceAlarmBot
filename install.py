@@ -153,6 +153,7 @@ def write_env(answers: InstallAnswers) -> Path:
     values = {
         "WB_API_URL": "https://wirenboard.cloud/api/v1/controllers/?page_size=100",
         "WB_TOKEN": answers.wb_token,
+        "WB_AUTH_SCHEME": "Bearer",
         "CONTROLLERS_PATH": "results",
         "ID_FIELD": "serialNumber",
         "NAME_FIELD": "description",

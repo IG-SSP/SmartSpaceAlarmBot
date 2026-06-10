@@ -73,6 +73,7 @@ SMTP больше не нужен. Backup скачивается через Tele
 ```dotenv
 WB_API_URL=https://wirenboard.cloud/api/v1/controllers/?page_size=100
 WB_TOKEN=...
+WB_AUTH_SCHEME=Bearer
 
 CONTROLLERS_PATH=results
 ID_FIELD=serialNumber
@@ -196,7 +197,10 @@ sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru --totp
 
 ```dotenv
 WB_TOKEN=...
+WB_AUTH_SCHEME=Bearer
 ```
+
+Если API вернет `401`, клиент автоматически попробует fallback-схему `Token`.
 
 ## Backup через бота
 
