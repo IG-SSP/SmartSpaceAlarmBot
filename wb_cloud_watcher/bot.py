@@ -98,6 +98,7 @@ def run_bot(wb_config: Config, tg_config: TelegramConfig) -> int:
         lambda: list_user_profiles(tg_config),
         lambda value: add_user_by_identifier(tg_config, value),
         lambda value: remove_user_by_identifier(tg_config, value),
+        lambda user: request_access_from_admins(tg_config, user),
     )
     configure_webapp_menu(tg_config)
     try:
@@ -382,6 +383,14 @@ def handle_callback(wb_config: Config, tg_config: TelegramConfig, callback: dict
     elif data.startswith("delay:"):
         set_user_offline_delay(tg_config, user_id, parse_delay_value(data))
         edit_message(tg_config, chat_id, message_id, format_settings(tg_config, user_id), settings_keyboard(tg_config, user_id))
+    elif data.startswith("access:add:") and is_admin(tg_config, user_id):
+        requested_user_id = parse_callback_user_id(data)
+        if requested_user_id is None:
+            edit_message(tg_config, chat_id, message_id, "Не удалось разобрать ID пользователя.", admin_keyboard())
+        else:
+            result = add_user_by_identifier(tg_config, str(requested_user_id))
+            text = f"Пользователь разрешен: <code>{requested_user_id}</code>" if result.get("ok") else html.escape(str(result.get("message") or result.get("error")))
+            edit_message(tg_config, chat_id, message_id, text, admin_keyboard())
     elif data.startswith("controller:"):
         serial_number = data.split(":", 1)[1]
         edit_controller(wb_config, tg_config, chat_id, message_id, serial_number)
@@ -912,6 +921,13 @@ def parse_delay_value(data: str) -> int:
         return DEFAULT_OFFLINE_DELAY_SECONDS
 
 
+def parse_callback_user_id(data: str) -> int | None:
+    try:
+        return int(data.rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
 def get_user_preferences(tg_config: TelegramConfig, user_id: int) -> dict[str, Any]:
     data = load_users_payload(tg_config)
     raw = data.get("preferences", {}).get(str(user_id), {})
@@ -1104,6 +1120,30 @@ def resolve_user_identifier(tg_config: TelegramConfig, value: str) -> int | None
         if str(profile.get("username") or "").casefold() == username:
             return int(user_id)
     return None
+
+
+def request_access_from_admins(tg_config: TelegramConfig, user: dict[str, Any]) -> dict[str, Any]:
+    user_id = user.get("id")
+    if not isinstance(user_id, int):
+        return {"ok": False, "error": "bad_user"}
+    remember_user_profile(tg_config, user)
+    username = str(user.get("username") or "")
+    name = " ".join(str(user.get(key) or "").strip() for key in ("first_name", "last_name")).strip()
+    lines = [
+        "<b>Запрос доступа к Mini App</b>",
+        "",
+        f"ID: <code>{user_id}</code>",
+    ]
+    if username:
+        lines.append(f"Username: @{html.escape(username)}")
+    if name:
+        lines.append(f"Имя: {html.escape(name)}")
+    keyboard = inline_keyboard([[callback_button("Разрешить пользователя", f"access:add:{user_id}")]])
+    delivered = 0
+    for admin_id in get_admin_user_ids(tg_config):
+        if safe_send_message(tg_config, admin_id, "\n".join(lines), keyboard):
+            delivered += 1
+    return {"ok": True, "delivered": delivered}
 
 
 def send_users(tg_config: TelegramConfig, chat_id: int) -> None:

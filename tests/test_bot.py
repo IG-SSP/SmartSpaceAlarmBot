@@ -21,6 +21,7 @@ from wb_cloud_watcher.bot import (
     parse_allowed_user_ids,
     remember_user_profile,
     resolve_user_identifier,
+    request_access_from_admins,
     save_history,
     load_history,
     set_user_theme,
@@ -187,6 +188,25 @@ class BotTests(unittest.TestCase):
             save_history(tg_config, [event])
 
             self.assertEqual(load_history(tg_config), [event])
+
+    def test_request_access_notifies_admins_and_remembers_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tg_config = TelegramConfig(
+                bot_token="token",
+                allowed_user_ids={1},
+                admin_user_ids={2},
+                users_file=Path(tmp) / "users.json",
+                backup_dir=Path(tmp) / "backups",
+                timeout_seconds=30,
+            )
+            messages = []
+
+            with unittest.mock.patch("wb_cloud_watcher.bot.safe_send_message", side_effect=lambda *args: messages.append(args) or True):
+                result = request_access_from_admins(tg_config, {"id": 3, "username": "demo", "first_name": "Demo"})
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(resolve_user_identifier(tg_config, "@demo"), 3)
+            self.assertEqual(messages[0][1], 2)
 
     def test_build_multipart_body_contains_file(self):
         with tempfile.TemporaryDirectory() as tmp:

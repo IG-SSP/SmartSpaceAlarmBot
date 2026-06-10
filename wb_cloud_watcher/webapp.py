@@ -47,6 +47,7 @@ def start_webapp_server(
     list_users: Callable[[], dict[str, Any]] | None = None,
     add_user: Callable[[str], dict[str, Any]] | None = None,
     remove_user: Callable[[str], dict[str, Any]] | None = None,
+    request_access: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> ThreadingHTTPServer | None:
     if not webapp_config.public_url:
         return None
@@ -63,6 +64,7 @@ def start_webapp_server(
         list_users,
         add_user,
         remove_user,
+        request_access,
     )
     server = ThreadingHTTPServer((webapp_config.host, webapp_config.port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -83,6 +85,7 @@ def build_handler(
     list_users: Callable[[], dict[str, Any]] | None = None,
     add_user: Callable[[str], dict[str, Any]] | None = None,
     remove_user: Callable[[str], dict[str, Any]] | None = None,
+    request_access: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class WebAppHandler(BaseHTTPRequestHandler):
         server_version = "SmartSpaceAlarmBotWebApp/0.1"
@@ -130,6 +133,9 @@ def build_handler(
                 return
             if parsed.path == "/api/users":
                 self.handle_add_user()
+                return
+            if parsed.path == "/api/access-request":
+                self.handle_access_request()
                 return
             self.send_json(404, {"error": "not_found"})
 
@@ -193,6 +199,19 @@ def build_handler(
             result = remove_user(str(payload.get("user") or ""))
             self.send_json(200 if result.get("ok") else 400, result)
 
+        def handle_access_request(self) -> None:
+            user = self.telegram_user()
+            if user is None:
+                return
+            if is_allowed_user(int(user["id"])):
+                self.send_json(200, {"ok": True, "already_allowed": True})
+                return
+            if request_access is None:
+                self.send_json(503, {"ok": False, "error": "access_requests_unavailable"})
+                return
+            result = request_access(user)
+            self.send_json(200 if result.get("ok") else 400, result)
+
         def handle_update_preferences(self) -> None:
             user = self.authorize()
             if user is None:
@@ -252,6 +271,16 @@ def build_handler(
             )
 
         def authorize(self) -> dict[str, Any] | None:
+            user = self.telegram_user()
+            if user is None:
+                return None
+            user_id = user.get("id")
+            if not isinstance(user_id, int) or not is_allowed_user(user_id):
+                self.send_json(403, {"error": "forbidden", "user_id": user_id})
+                return None
+            return user
+
+        def telegram_user(self) -> dict[str, Any] | None:
             auth = self.headers.get("Authorization", "")
             if not auth.startswith("tma "):
                 self.send_json(401, {"error": "missing_init_data"})
@@ -267,8 +296,8 @@ def build_handler(
                 return None
 
             user_id = user.get("id")
-            if not isinstance(user_id, int) or not is_allowed_user(user_id):
-                self.send_json(403, {"error": "forbidden", "user_id": user_id})
+            if not isinstance(user_id, int):
+                self.send_json(401, {"error": "bad_init_data", "message": "user id отсутствует"})
                 return None
             return user
 

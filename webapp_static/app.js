@@ -8,6 +8,8 @@ const state = {
   history: [],
   isAdmin: false,
   users: [],
+  denied: false,
+  deniedUserId: null,
   preferences: {
     theme: "dark",
     offline_delay_seconds: 0,
@@ -78,7 +80,10 @@ for (const tab of elements.viewTabs) {
 boot();
 
 async function boot() {
-  await loadMe();
+  const allowed = await loadMe();
+  if (!allowed) {
+    return;
+  }
   await loadPreferences();
   await loadControllers();
   await loadHistory();
@@ -89,10 +94,21 @@ async function boot() {
 
 async function loadMe() {
   if (!tg?.initData) {
-    return;
+    renderError("Откройте приложение из Telegram, чтобы подтвердить доступ.");
+    return false;
   }
   const response = await fetch("/api/me", { headers: authHeaders() });
   const payload = await response.json();
+  if (response.status === 403) {
+    state.denied = true;
+    state.deniedUserId = payload.user_id || tg.initDataUnsafe?.user?.id || null;
+    renderAccessDenied();
+    return false;
+  }
+  if (!response.ok) {
+    renderError(payload.message || payload.error || "Не удалось подтвердить доступ.");
+    return false;
+  }
   if (response.ok) {
     state.isAdmin = Boolean(payload.is_admin);
     elements.adminPanel.hidden = !state.isAdmin;
@@ -102,6 +118,7 @@ async function loadMe() {
       }
     }
   }
+  return true;
 }
 
 async function loadPreferences() {
@@ -347,6 +364,50 @@ function renderError(message) {
   empty.className = "empty-state";
   empty.textContent = message;
   elements.controllerList.append(empty);
+}
+
+function renderAccessDenied(message = "") {
+  setView("status");
+  for (const tab of elements.viewTabs) {
+    tab.hidden = true;
+  }
+  elements.statusLine.textContent = "";
+  elements.controllerList.replaceChildren();
+  renderSummary({ total: "-", online: "-", offline: "-" });
+
+  const card = document.createElement("div");
+  card.className = "denied-card";
+  const title = document.createElement("h2");
+  title.textContent = "Доступ не выдан";
+  const text = document.createElement("p");
+  text.textContent = "Администратор должен разрешить ваш Telegram аккаунт. Данные объектов скрыты.";
+  const id = document.createElement("code");
+  id.textContent = state.deniedUserId ? `Ваш ID: ${state.deniedUserId}` : "Telegram ID не получен";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Отправить заявку администратору";
+  button.addEventListener("click", requestAccess);
+  const note = document.createElement("p");
+  note.className = "denied-note";
+  note.textContent = message;
+  card.append(title, text, id, button, note);
+  elements.controllerList.append(card);
+}
+
+async function requestAccess() {
+  try {
+    const response = await fetch("/api/access-request", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || payload.error || "заявка не отправлена");
+    }
+    renderAccessDenied("Заявка отправлена администраторам.");
+  } catch (error) {
+    renderAccessDenied(`Не удалось отправить заявку: ${error.message}`);
+  }
 }
 
 function formatDate(value) {

@@ -333,6 +333,50 @@ select {
   text-align: center;
 }
 
+.denied-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 18px;
+}
+
+.denied-card h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.denied-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.denied-card code {
+  display: block;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--text);
+}
+
+.denied-card button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--button-text);
+  cursor: pointer;
+}
+
+.denied-card .denied-note:empty {
+  display: none;
+}
+
 .history-item,
 .user-row {
   display: flex;
