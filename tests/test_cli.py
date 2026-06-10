@@ -11,6 +11,7 @@ from wb_cloud_watcher.cli import (
     find_changes,
     format_notification_body,
     format_http_error,
+    get_json_authenticated,
     get_path,
     parse_online,
     request_token,
@@ -50,6 +51,9 @@ class CliTests(unittest.TestCase):
         config = Config(
             api_url="https://wirenboard.cloud/api/v1/controllers/?page_size=1",
             auth_header="Authorization: Token test",
+            refresh_token="refresh-token",
+            auth_scheme="Bearer",
+            env_path=None,
             controllers_path="results",
             id_field="serialNumber",
             name_field="description",
@@ -111,6 +115,8 @@ class CliTests(unittest.TestCase):
             timeout_seconds=30,
         )
         print_.assert_any_call("WB_TOKEN=access-token")
+        print_.assert_any_call("WB_REFRESH_TOKEN=refresh-token")
+        print_.assert_any_call("WB_AUTH_SCHEME=Bearer")
 
     def test_fallback_auth_header_switches_bearer_and_token(self):
         self.assertEqual(
@@ -128,6 +134,40 @@ class CliTests(unittest.TestCase):
         error = HTTPError("https://example.test", 401, "Unauthorized", {}, response)
 
         self.assertEqual(str(format_http_error("API", error)), 'API returned HTTP 401: {"detail":"bad token"}')
+
+    def test_get_json_authenticated_refreshes_after_401(self):
+        config = Config(
+            api_url="https://wirenboard.cloud/api/v1/controllers/?page_size=1",
+            auth_header="Authorization: Bearer old",
+            refresh_token="refresh-old",
+            auth_scheme="Bearer",
+            env_path=None,
+            controllers_path="results",
+            id_field="serialNumber",
+            name_field="description",
+            online_field="isAgentOk",
+            last_seen_field="lastAgentPingAt",
+            state_file=None,
+            poll_interval_seconds=60,
+            notify_on_first_run=False,
+            timeout_seconds=15,
+            ntfy_server="https://ntfy.sh",
+            ntfy_topic="",
+            ntfy_token="",
+            ntfy_priority="default",
+        )
+
+        with patch("wb_cloud_watcher.cli.get_json", side_effect=[RuntimeError("API returned HTTP 401"), {"ok": True}]) as get_json, patch(
+            "wb_cloud_watcher.cli.refresh_access_token", return_value=("access-new", "refresh-new")
+        ) as refresh_access_token, patch("wb_cloud_watcher.cli.persist_tokens") as persist_tokens:
+            payload, auth_header, refresh_token = get_json_authenticated(config, "https://example.test", config.auth_header, config.refresh_token)
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(auth_header, "Authorization: Bearer access-new")
+        self.assertEqual(refresh_token, "refresh-new")
+        refresh_access_token.assert_called_once_with("refresh-old", 15)
+        persist_tokens.assert_called_once_with(None, "access-new", "refresh-new", "Bearer")
+        self.assertEqual(get_json.call_count, 2)
 
 
 if __name__ == "__main__":

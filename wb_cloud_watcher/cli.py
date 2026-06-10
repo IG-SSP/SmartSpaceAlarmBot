@@ -22,6 +22,9 @@ FALSE_VALUES = {"false", "0", "offline", "down", "disconnected", "inactive", "fa
 class Config:
     api_url: str
     auth_header: str
+    refresh_token: str
+    auth_scheme: str
+    env_path: Path
     controllers_path: str
     id_field: str
     name_field: str
@@ -156,9 +159,11 @@ def fetch_controllers(config: Config) -> list[Controller]:
 def fetch_controller_payloads(config: Config) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     next_url: str | None = config.api_url
+    auth_header = config.auth_header
+    refresh_token = config.refresh_token
 
     while next_url:
-        payload = get_json(next_url, config.auth_header, config.timeout_seconds)
+        payload, auth_header, refresh_token = get_json_authenticated(config, next_url, auth_header, refresh_token)
         raw_controllers = get_path(payload, config.controllers_path)
         if not isinstance(raw_controllers, list):
             raise ValueError(f"controllers path must point to a list, got {type(raw_controllers).__name__}")
@@ -172,6 +177,26 @@ def fetch_controller_payloads(config: Config) -> list[dict[str, Any]]:
         next_url = urljoin(next_url, next_value) if isinstance(next_value, str) and next_value else None
 
     return payloads
+
+
+def get_json_authenticated(
+    config: Config,
+    url: str,
+    auth_header: str,
+    refresh_token: str,
+) -> tuple[Any, str, str]:
+    try:
+        return get_json(url, auth_header, config.timeout_seconds), auth_header, refresh_token
+    except RuntimeError as exc:
+        if "HTTP 401" not in str(exc) or not refresh_token:
+            raise
+
+    access, new_refresh = refresh_access_token(refresh_token, config.timeout_seconds)
+    if new_refresh:
+        refresh_token = new_refresh
+    auth_header = f"Authorization: {config.auth_scheme} {access}"
+    persist_tokens(config.env_path, access, refresh_token, config.auth_scheme)
+    return get_json(url, auth_header, config.timeout_seconds), auth_header, refresh_token
 
 
 def get_json(url: str, auth_header: str, timeout_seconds: int) -> Any:
@@ -235,6 +260,19 @@ def post_json(url: str, payload: dict[str, Any], timeout_seconds: int) -> Any:
         raise RuntimeError("API returned invalid JSON") from exc
 
 
+def refresh_access_token(refresh_token: str, timeout_seconds: int) -> tuple[str, str]:
+    response = post_json(
+        "https://wirenboard.cloud/api/v1/auth/token/refresh/",
+        {"refresh": refresh_token},
+        timeout_seconds=timeout_seconds,
+    )
+    access = response.get("access") if isinstance(response, dict) else None
+    new_refresh = response.get("refresh") if isinstance(response, dict) else None
+    if not access:
+        raise RuntimeError("refresh response does not contain 'access'")
+    return str(access), str(new_refresh or refresh_token)
+
+
 def request_token(email: str | None, totp_code: str | None, recovery_code: str | None) -> int:
     email = email or input("Wirenboard.cloud email: ").strip()
     password = getpass.getpass("Wirenboard.cloud password: ")
@@ -257,6 +295,9 @@ def request_token(email: str | None, totp_code: str | None, recovery_code: str |
         print(refresh)
     print("\nPut this into .env:")
     print(f"WB_TOKEN={access}")
+    if refresh:
+        print(f"WB_REFRESH_TOKEN={refresh}")
+    print("WB_AUTH_SCHEME=Bearer")
     return 0
 
 
@@ -339,18 +380,22 @@ def controller_to_state(controller: Controller) -> dict[str, Any]:
 
 
 def read_config() -> Config:
+    env_path = Path(".env")
     api_url = env("WB_API_URL", "https://wirenboard.cloud/api/v1/controllers/?page_size=100")
     if not api_url:
         raise SystemExit("WB_API_URL is required")
     auth_header = env("WB_AUTH_HEADER")
     token = env("WB_TOKEN")
+    auth_scheme = env("WB_AUTH_SCHEME", "Bearer")
     if token and not auth_header:
-        auth_scheme = env("WB_AUTH_SCHEME", "Bearer")
         auth_header = f"Authorization: {auth_scheme} {token}"
 
     return Config(
         api_url=api_url,
         auth_header=auth_header,
+        refresh_token=env("WB_REFRESH_TOKEN"),
+        auth_scheme=auth_scheme,
+        env_path=env_path,
         controllers_path=env("CONTROLLERS_PATH", "results"),
         id_field=env("ID_FIELD", "serialNumber"),
         name_field=env("NAME_FIELD", "description"),
@@ -379,6 +424,41 @@ def load_dotenv(path: Path) -> None:
         key = key.strip()
         value = value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)
+
+
+def persist_tokens(env_path: Path, access_token: str, refresh_token: str, auth_scheme: str) -> None:
+    values = {
+        "WB_TOKEN": access_token,
+        "WB_REFRESH_TOKEN": refresh_token,
+        "WB_AUTH_SCHEME": auth_scheme,
+    }
+    update_env_file(env_path, values)
+    os.environ.update(values)
+
+
+def update_env_file(path: Path, values: dict[str, str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    updated: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            updated.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in values:
+            updated.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            updated.append(line)
+    for key, value in values.items():
+        if key not in seen:
+            updated.append(f"{key}={value}")
+    path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def env(name: str, default: str = "") -> str:

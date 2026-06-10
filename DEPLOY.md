@@ -31,7 +31,7 @@ sudo python3 install.py
 - системного пользователя, по умолчанию `wbwatcher`;
 - имя systemd service, по умолчанию `wb-cloud-watcher-bot`;
 - email Wirenboard.cloud, по умолчанию `ig@gilpert.ru`;
-- существующий `WB_TOKEN` или пароль для получения токена;
+- существующие `WB_TOKEN`/`WB_REFRESH_TOKEN` или пароль для получения токенов;
 - TOTP/recovery code, если нужен;
 - Telegram bot token от `@BotFather`;
 - Telegram user IDs админов;
@@ -58,6 +58,7 @@ SMTP больше не нужен. Backup скачивается через Tele
 Повторный запуск полезен, если нужно заменить:
 
 - `WB_TOKEN`;
+- `WB_REFRESH_TOKEN`;
 - `TELEGRAM_BOT_TOKEN`;
 - список админов;
 - интервал проверки;
@@ -74,6 +75,7 @@ SMTP больше не нужен. Backup скачивается через Tele
 ```dotenv
 WB_API_URL=https://wirenboard.cloud/api/v1/controllers/?page_size=100
 WB_TOKEN=...
+WB_REFRESH_TOKEN=...
 WB_AUTH_SCHEME=Bearer
 
 CONTROLLERS_PATH=results
@@ -200,10 +202,12 @@ sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru --totp
 
 ```dotenv
 WB_TOKEN=...
+WB_REFRESH_TOKEN=...
 WB_AUTH_SCHEME=Bearer
 ```
 
 Если API вернет `401`, клиент автоматически попробует fallback-схему `Token`.
+Если access token истек, бот использует `WB_REFRESH_TOKEN`, получает новый access token и обновляет `.env`.
 
 ## Backup через бота
 

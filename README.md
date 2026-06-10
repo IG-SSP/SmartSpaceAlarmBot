@@ -65,6 +65,7 @@ sudo python3 install.py
 
 ```dotenv
 WB_TOKEN=...
+WB_REFRESH_TOKEN=...
 WB_AUTH_SCHEME=Bearer
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ADMIN_USER_IDS=111111111
@@ -74,7 +75,7 @@ BACKUP_DIR=.backups
 POLL_INTERVAL_SECONDS=60
 ```
 
-`WB_TOKEN` и `TELEGRAM_BOT_TOKEN` нельзя коммитить в GitHub.
+`WB_TOKEN`, `WB_REFRESH_TOKEN` и `TELEGRAM_BOT_TOKEN` нельзя коммитить в GitHub.
 
 Для JWT access token, который выдает `/api/v1/auth/token/`, используется:
 
@@ -83,6 +84,7 @@ WB_AUTH_SCHEME=Bearer
 ```
 
 Если Wirenboard.cloud вернет `401`, клиент автоматически попробует второй вариант `Authorization: Token ...`.
+Если access token истек, бот использует `WB_REFRESH_TOKEN`, получает новый access token и обновляет `.env`.
 
 ## Получение WB_TOKEN
 
@@ -105,6 +107,8 @@ sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru --totp
 
 ```dotenv
 WB_TOKEN=...
+WB_REFRESH_TOKEN=...
+WB_AUTH_SCHEME=Bearer
 ```
 
 ## Команды бота

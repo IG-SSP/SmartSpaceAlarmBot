@@ -30,6 +30,7 @@ class InstallAnswers:
     service_name: str
     wb_email: str
     wb_token: str
+    wb_refresh_token: str
     telegram_bot_token: str
     telegram_allowed_user_ids: str
     telegram_admin_user_ids: str
@@ -79,7 +80,7 @@ def collect_answers() -> InstallAnswers:
     service_name = prompt("systemd service name", DEFAULT_SERVICE_NAME)
 
     wb_email = prompt("Wirenboard.cloud email", DEFAULT_WB_EMAIL)
-    wb_token = prompt_wb_token(wb_email)
+    wb_token, wb_refresh_token = prompt_wb_tokens(wb_email)
 
     telegram_bot_token = prompt_secret("Telegram bot token from @BotFather")
     telegram_admin_user_ids = prompt(
@@ -99,6 +100,7 @@ def collect_answers() -> InstallAnswers:
         service_name=service_name,
         wb_email=wb_email,
         wb_token=wb_token,
+        wb_refresh_token=wb_refresh_token,
         telegram_bot_token=telegram_bot_token,
         telegram_allowed_user_ids=telegram_allowed_user_ids,
         telegram_admin_user_ids=telegram_admin_user_ids,
@@ -107,10 +109,11 @@ def collect_answers() -> InstallAnswers:
     )
 
 
-def prompt_wb_token(email: str) -> str:
+def prompt_wb_tokens(email: str) -> tuple[str, str]:
     existing = prompt_secret("Existing Wirenboard.cloud access token (leave empty to log in)", required=False)
     if existing:
-        return existing
+        refresh = prompt_secret("Existing Wirenboard.cloud refresh token", required=False)
+        return existing, refresh
 
     password = prompt_secret("Wirenboard.cloud password")
     totp_code = prompt("TOTP code if enabled (leave empty if not)", "", required=False)
@@ -128,7 +131,7 @@ def prompt_wb_token(email: str) -> str:
     response = post_json("https://wirenboard.cloud/api/v1/auth/token/", payload, timeout_seconds=30)
     if not isinstance(response, dict) or not response.get("access"):
         raise RuntimeError("Wirenboard.cloud token response does not contain access token")
-    return str(response["access"])
+    return str(response["access"]), str(response.get("refresh") or "")
 
 
 def copy_project(source_dir: Path, install_dir: Path) -> None:
@@ -153,6 +156,7 @@ def write_env(answers: InstallAnswers) -> Path:
     values = {
         "WB_API_URL": "https://wirenboard.cloud/api/v1/controllers/?page_size=100",
         "WB_TOKEN": answers.wb_token,
+        "WB_REFRESH_TOKEN": answers.wb_refresh_token,
         "WB_AUTH_SCHEME": "Bearer",
         "CONTROLLERS_PATH": "results",
         "ID_FIELD": "serialNumber",
