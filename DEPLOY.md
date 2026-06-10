@@ -1,99 +1,84 @@
 # Deployment Guide
 
-This guide assumes a clean Ubuntu/Debian VPS.
+This guide is for deploying SmartSpaceAlarmBot on a clean Ubuntu/Debian VPS.
 
-For an interactive setup that asks for all required values, writes `.env`, installs systemd and emails a backup archive, run:
+Repository:
 
-```bash
-sudo python3 install.py
+```text
+https://github.com/IG-SSP/SmartSpaceAlarmBot
 ```
 
-Manual steps are below.
+The bot uses Telegram long polling, so the server does not need any inbound public web port. It only needs outbound HTTPS access to:
 
-## 1. Install Runtime
+- `wirenboard.cloud`
+- `api.telegram.org`
+- your SMTP server, if email backup is enabled
+
+## Quick Install
+
+Run on the server over SSH:
 
 ```bash
 sudo apt update
 sudo apt install -y python3 git
+sudo git clone https://github.com/IG-SSP/SmartSpaceAlarmBot.git /opt/wb-cloud-watcher
+cd /opt/wb-cloud-watcher
+sudo python3 install.py
 ```
 
-## 2. Create Service User
+The installer will ask for:
 
-```bash
-sudo useradd --system --home /opt/wb-cloud-watcher --shell /usr/sbin/nologin wbwatcher
-```
+- Wirenboard.cloud email, default: `ig@gilpert.ru`
+- existing Wirenboard.cloud access token, or password for interactive token login
+- TOTP code or recovery code, if enabled
+- Telegram bot token from `@BotFather`
+- allowed Telegram user IDs
+- polling interval
+- whether to send first-run offline alerts
+- SMTP settings for backup email
 
-## 3. Put Project On The Server
+The Wirenboard.cloud password is not written to `.env`. It is used once to request an access token.
 
-Use any method you prefer: `git clone`, `scp`, or an archive.
+## Where Config Lives
 
-Example with git:
-
-```bash
-sudo git clone YOUR_REPO_URL /opt/wb-cloud-watcher
-sudo chown -R wbwatcher:wbwatcher /opt/wb-cloud-watcher
-```
-
-If you copy files manually, the final structure should look like:
+Runtime config is stored here:
 
 ```text
-/opt/wb-cloud-watcher/
-  wb_cloud_watcher/
-  deploy/
-  README.md
-  DEPLOY.md
-  .env
+/opt/wb-cloud-watcher/.env
 ```
 
-## 4. Create `.env`
-
-Create the config file:
-
-```bash
-cd /opt/wb-cloud-watcher
-sudo cp .env.example .env
-sudo nano .env
-```
-
-Minimum useful config:
+Important values:
 
 ```dotenv
-WB_API_URL=https://wirenboard.cloud/api/v1/controllers/?page_size=100
-WB_TOKEN=REPLACE_ME
-
-CONTROLLERS_PATH=results
-ID_FIELD=serialNumber
-NAME_FIELD=description
-ONLINE_FIELD=isAgentOk
-LAST_SEEN_FIELD=lastAgentPingAt
-
-STATE_FILE=.state/controllers.json
+WB_TOKEN=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
 POLL_INTERVAL_SECONDS=60
-NOTIFY_ON_FIRST_RUN=false
-WB_TIMEOUT_SECONDS=15
-
-TELEGRAM_BOT_TOKEN=REPLACE_ME
-TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
-TELEGRAM_TIMEOUT_SECONDS=30
 ```
 
-Secure it:
+The installer sets secure permissions:
 
 ```bash
-sudo chown wbwatcher:wbwatcher .env
-sudo chmod 600 .env
+sudo chmod 600 /opt/wb-cloud-watcher/.env
+sudo chown wbwatcher:wbwatcher /opt/wb-cloud-watcher/.env
 ```
 
-## 5. Telegram Bot Token
+## Telegram Bot Token
 
-Create a Telegram bot:
+Create a bot:
 
 1. Open `@BotFather` in Telegram.
 2. Send `/newbot`.
 3. Choose name and username.
 4. Copy the token.
 
-Put it into `.env`:
+Use that token when the installer asks:
+
+```text
+Telegram bot token from @BotFather:
+```
+
+Or edit manually:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=123456789:AA...
@@ -101,105 +86,84 @@ TELEGRAM_BOT_TOKEN=123456789:AA...
 
 Do not commit this token.
 
-## 6. Approved Telegram Users
+## Approved Telegram Users
 
-Allowed users are configured by numeric Telegram user id:
+Access is controlled by numeric Telegram user IDs:
 
 ```dotenv
 TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
 ```
 
-To find your id before allowlisting yourself, start the bot temporarily with a permissive temporary id is not useful because the bot needs your real id. The bot intentionally replies to unauthorized `/id` requests with:
+To find your ID:
+
+1. Set a temporary placeholder during install, for example `0`.
+2. Start the service.
+3. Send `/id` to the bot.
+4. The bot replies even to unauthorized users:
 
 ```text
 Access denied.
 Your Telegram user id: 111111111
 ```
 
-So the practical flow is:
+Then update `.env`:
 
-1. Put the bot token into `.env`.
-2. Put a placeholder into `TELEGRAM_ALLOWED_USER_IDS`, for example `0`.
-3. Start the bot.
-4. Send `/id` to the bot from your Telegram account.
-5. Copy the shown numeric id into `.env`.
-6. Restart the bot.
-
-Multiple users:
-
-```dotenv
-TELEGRAM_ALLOWED_USER_IDS=111111111,222222222,333333333
+```bash
+sudo nano /opt/wb-cloud-watcher/.env
+sudo systemctl restart wb-cloud-watcher-bot
 ```
 
-## 7. Wirenboard.cloud Token
+## Wirenboard.cloud Token
 
-Do not send the Wirenboard.cloud password in chat.
+Preferred: let the installer get it.
 
-Run token login directly on the server over SSH:
+Manual token request:
 
 ```bash
 cd /opt/wb-cloud-watcher
 sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru
 ```
 
-The password prompt is hidden. If TOTP is enabled:
+If TOTP is enabled:
 
 ```bash
 sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru --totp-code 123456
 ```
 
-The command prints:
+Put the printed value into `.env`:
 
 ```dotenv
 WB_TOKEN=...
 ```
 
-Put that value into `/opt/wb-cloud-watcher/.env`.
+## Backup Email
 
-## 8. Test Manually
+At the end of install, the installer can send a backup archive by email.
 
-Check Wirenboard.cloud access:
+The archive contains:
 
-```bash
-cd /opt/wb-cloud-watcher
-sudo -u wbwatcher python3 -m wb_cloud_watcher dump
-```
+- project code
+- `.env`
+- systemd service file
+- restore instructions
 
-Start bot manually:
+Important: the archive contains access tokens. Send it only to a mailbox you control.
 
-```bash
-sudo -u wbwatcher python3 -m wb_cloud_watcher bot
-```
+SMTP values requested by the installer:
 
-In Telegram, send:
+- recipient email
+- SMTP host
+- SMTP port, usually `587`
+- STARTTLS yes/no
+- SMTP username
+- SMTP password or app password
+- From address
 
-```text
-/start
-/status
-/status SERIAL
-/id
-```
+Restore instructions are in `RESTORE.md`.
 
-Stop the manual process with `Ctrl+C`.
+## Service Commands
 
-## 9. Install systemd Service
-
-The service template is in:
-
-```text
-deploy/wb-cloud-watcher-bot.service
-```
-
-Install it:
-
-```bash
-cd /opt/wb-cloud-watcher
-sudo cp deploy/wb-cloud-watcher-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now wb-cloud-watcher-bot
-```
-
-Check status:
+Check service:
 
 ```bash
 sudo systemctl status wb-cloud-watcher-bot
@@ -211,16 +175,67 @@ View logs:
 sudo journalctl -u wb-cloud-watcher-bot -f
 ```
 
-Restart after `.env` changes:
+Restart:
 
 ```bash
 sudo systemctl restart wb-cloud-watcher-bot
 ```
 
-## 10. Important Security Notes
+Stop:
+
+```bash
+sudo systemctl stop wb-cloud-watcher-bot
+```
+
+## Manual Test
+
+Check Wirenboard.cloud access:
+
+```bash
+cd /opt/wb-cloud-watcher
+sudo -u wbwatcher python3 -m wb_cloud_watcher dump
+```
+
+Run bot in foreground:
+
+```bash
+sudo systemctl stop wb-cloud-watcher-bot
+cd /opt/wb-cloud-watcher
+sudo -u wbwatcher python3 -m wb_cloud_watcher bot
+```
+
+In Telegram:
+
+```text
+/start
+/status
+/status SERIAL
+/id
+```
+
+Stop foreground mode with `Ctrl+C`, then start service again:
+
+```bash
+sudo systemctl start wb-cloud-watcher-bot
+```
+
+## Update Deployment
+
+Pull new code:
+
+```bash
+cd /opt/wb-cloud-watcher
+sudo git pull
+sudo chown -R wbwatcher:wbwatcher /opt/wb-cloud-watcher
+sudo chmod 600 /opt/wb-cloud-watcher/.env
+sudo systemctl restart wb-cloud-watcher-bot
+```
+
+## Security Notes
 
 - Store `WB_TOKEN` and `TELEGRAM_BOT_TOKEN` only in `.env`.
 - Keep `.env` permissions at `600`.
-- Do not put the Wirenboard.cloud password into `.env`.
-- Do not expose this bot through a public web port. It uses Telegram long polling and does not need inbound firewall rules.
-- The server only needs outbound HTTPS access to `wirenboard.cloud` and `api.telegram.org`.
+- Do not store the Wirenboard.cloud password on the server.
+- Do not send the Wirenboard.cloud password in chat.
+- Do not expose a public HTTP port for this bot; it uses Telegram long polling.
+- Keep the email backup private because it contains `.env`.
