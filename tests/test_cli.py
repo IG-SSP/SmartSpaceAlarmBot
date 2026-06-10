@@ -6,6 +6,7 @@ from urllib.error import HTTPError
 from wb_cloud_watcher.cli import (
     Controller,
     Config,
+    current_auth_header,
     fallback_auth_header,
     fetch_controller_payloads,
     find_changes,
@@ -73,10 +74,35 @@ class CliTests(unittest.TestCase):
             {"results": [{"serialNumber": "wb-2"}], "next": None},
         ]
 
-        with patch("wb_cloud_watcher.cli.get_json", side_effect=pages) as get_json:
+        with patch.dict("os.environ", {}, clear=True), patch("wb_cloud_watcher.cli.get_json", side_effect=pages) as get_json:
             self.assertEqual(fetch_controller_payloads(config), [{"serialNumber": "wb-1"}, {"serialNumber": "wb-2"}])
 
         self.assertEqual(get_json.call_count, 2)
+
+    def test_current_auth_header_prefers_refreshed_environment_token(self):
+        config = Config(
+            api_url="https://wirenboard.cloud/api/v1/controllers/",
+            auth_header="Authorization: Bearer old",
+            refresh_token="refresh-old",
+            auth_scheme="Bearer",
+            env_path=None,
+            controllers_path="results",
+            id_field="serialNumber",
+            name_field="description",
+            online_field="isAgentOk",
+            last_seen_field="lastAgentPingAt",
+            state_file=None,
+            poll_interval_seconds=60,
+            notify_on_first_run=False,
+            timeout_seconds=15,
+            ntfy_server="https://ntfy.sh",
+            ntfy_topic="",
+            ntfy_token="",
+            ntfy_priority="default",
+        )
+
+        with patch.dict("os.environ", {"WB_TOKEN": "new", "WB_AUTH_SCHEME": "Bearer"}, clear=True):
+            self.assertEqual(current_auth_header(config), "Authorization: Bearer new")
 
     def test_format_notification_body_includes_friendly_name_and_remote_access_url(self):
         controller = Controller(

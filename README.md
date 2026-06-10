@@ -28,6 +28,7 @@ https://wirenboard.cloud/connect/http/<serialNumber>/
 - Позволяет админам добавлять и удалять пользователей прямо из бота.
 - Позволяет админам скачать backup-архив через бота.
 - Делает постраничные inline-кнопки, чтобы нормально работать с большим числом контроллеров.
+- Поддерживает Telegram Mini App: сводка, поиск, фильтры и быстрые ссылки на веб-интерфейс контроллеров.
 - Хранит состояние и список пользователей локально в `.state`.
 - Работает без внешних Python-зависимостей.
 
@@ -72,6 +73,10 @@ TELEGRAM_ADMIN_USER_IDS=111111111
 TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
 TELEGRAM_USERS_FILE=.state/telegram_users.json
 BACKUP_DIR=.backups
+WEBAPP_PUBLIC_URL=https://176.124.201.26.sslip.io
+WEBAPP_HOST=127.0.0.1
+WEBAPP_PORT=8088
+WEBAPP_AUTH_MAX_AGE_SECONDS=86400
 POLL_INTERVAL_SECONDS=60
 ```
 
@@ -135,6 +140,25 @@ WB_AUTH_SCHEME=Bearer
 Список объектов выводится постранично: по 12 объектов на страницу. Если объектов больше, бот показывает кнопки `Назад` и `Вперед`.
 
 Админов нельзя удалить через `/deluser`. Чтобы изменить список админов, нужно поменять `TELEGRAM_ADMIN_USER_IDS` в `.env` и перезапустить сервис.
+
+## Telegram Mini App
+
+Если задан `WEBAPP_PUBLIC_URL`, бот:
+
+- запускает встроенный HTTP-сервер на `WEBAPP_HOST:WEBAPP_PORT`;
+- добавляет кнопку `Открыть приложение` в `/start`;
+- настраивает Telegram menu button `Статус объектов`;
+- отдает Mini App с поиском, фильтрами и ссылками на удаленный доступ.
+
+Telegram открывает Mini App только по публичному HTTPS. На VPS можно поставить Caddy и проксировать домен на локальный порт:
+
+```caddyfile
+176.124.201.26.sslip.io {
+    reverse_proxy 127.0.0.1:8088
+}
+```
+
+API приложения защищен Telegram `initData`: пользователь должен открыть приложение из Telegram, подпись должна быть валидной, а Telegram ID должен быть в approved/admin списке.
 
 ## Как узнать Telegram user id
 

@@ -34,6 +34,8 @@ class InstallAnswers:
     telegram_bot_token: str
     telegram_allowed_user_ids: str
     telegram_admin_user_ids: str
+    webapp_public_url: str
+    webapp_port: int
     poll_interval_seconds: int
     notify_on_first_run: bool
 
@@ -91,6 +93,8 @@ def collect_answers() -> InstallAnswers:
         "Allowed Telegram user IDs, comma-separated",
         telegram_admin_user_ids,
     )
+    webapp_public_url = prompt("Telegram Mini App public HTTPS URL (leave empty to disable)", "", required=False)
+    webapp_port = prompt_int("Telegram Mini App local port", 8088)
     poll_interval_seconds = prompt_int("Polling interval seconds", 60)
     notify_on_first_run = prompt_bool("Notify about already-offline controllers on first run", False)
 
@@ -104,6 +108,8 @@ def collect_answers() -> InstallAnswers:
         telegram_bot_token=telegram_bot_token,
         telegram_allowed_user_ids=telegram_allowed_user_ids,
         telegram_admin_user_ids=telegram_admin_user_ids,
+        webapp_public_url=webapp_public_url.rstrip("/"),
+        webapp_port=webapp_port,
         poll_interval_seconds=poll_interval_seconds,
         notify_on_first_run=notify_on_first_run,
     )
@@ -177,6 +183,10 @@ def write_env(answers: InstallAnswers) -> Path:
         "TELEGRAM_USERS_FILE": ".state/telegram_users.json",
         "TELEGRAM_TIMEOUT_SECONDS": "30",
         "BACKUP_DIR": ".backups",
+        "WEBAPP_PUBLIC_URL": answers.webapp_public_url,
+        "WEBAPP_HOST": "127.0.0.1",
+        "WEBAPP_PORT": str(answers.webapp_port),
+        "WEBAPP_AUTH_MAX_AGE_SECONDS": "86400",
     }
     env_path.write_text(format_env(values), encoding="utf-8")
     env_path.chmod(0o600)

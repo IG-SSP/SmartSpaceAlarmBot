@@ -159,8 +159,8 @@ def fetch_controllers(config: Config) -> list[Controller]:
 def fetch_controller_payloads(config: Config) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     next_url: str | None = config.api_url
-    auth_header = config.auth_header
-    refresh_token = config.refresh_token
+    auth_header = current_auth_header(config)
+    refresh_token = env("WB_REFRESH_TOKEN", config.refresh_token)
 
     while next_url:
         payload, auth_header, refresh_token = get_json_authenticated(config, next_url, auth_header, refresh_token)
@@ -194,9 +194,19 @@ def get_json_authenticated(
     access, new_refresh = refresh_access_token(refresh_token, config.timeout_seconds)
     if new_refresh:
         refresh_token = new_refresh
-    auth_header = f"Authorization: {config.auth_scheme} {access}"
-    persist_tokens(config.env_path, access, refresh_token, config.auth_scheme)
+    auth_scheme = env("WB_AUTH_SCHEME", config.auth_scheme)
+    auth_header = f"Authorization: {auth_scheme} {access}"
+    persist_tokens(config.env_path, access, refresh_token, auth_scheme)
     return get_json(url, auth_header, config.timeout_seconds), auth_header, refresh_token
+
+
+def current_auth_header(config: Config) -> str:
+    auth_header = env("WB_AUTH_HEADER")
+    token = env("WB_TOKEN")
+    auth_scheme = env("WB_AUTH_SCHEME", config.auth_scheme)
+    if token and not auth_header:
+        return f"Authorization: {auth_scheme} {token}"
+    return auth_header or config.auth_header
 
 
 def get_json(url: str, auth_header: str, timeout_seconds: int) -> Any:

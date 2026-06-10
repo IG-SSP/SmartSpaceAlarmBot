@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>SmartSpaceAlarmBot</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Wirenboard.cloud</p>
+          <h1>Статус объектов</h1>
+        </div>
+        <button class="icon-button" id="refreshButton" type="button" title="Обновить">
+          <span aria-hidden="true">↻</span>
+        </button>
+      </header>
+
+      <section class="summary-grid" aria-label="Сводка">
+        <article class="summary-item">
+          <span class="summary-label">Всего</span>
+          <strong id="totalCount">-</strong>
+        </article>
+        <article class="summary-item is-ok">
+          <span class="summary-label">В сети</span>
+          <strong id="onlineCount">-</strong>
+        </article>
+        <article class="summary-item is-alert">
+          <span class="summary-label">Не в сети</span>
+          <strong id="offlineCount">-</strong>
+        </article>
+      </section>
+
+      <section class="toolbar" aria-label="Фильтры">
+        <div class="segmented" role="tablist" aria-label="Фильтр статуса">
+          <button class="segment is-active" type="button" data-filter="all">Все</button>
+          <button class="segment" type="button" data-filter="offline">Упавшие</button>
+          <button class="segment" type="button" data-filter="online">Онлайн</button>
+        </div>
+        <input id="searchInput" type="search" placeholder="Поиск по имени или serial" autocomplete="off" />
+      </section>
+
+      <p class="status-line" id="statusLine">Загрузка...</p>
+      <section class="controller-list" id="controllerList" aria-live="polite"></section>
+    </main>
+
+    <template id="controllerTemplate">
+      <article class="controller-card">
+        <div class="controller-main">
+          <span class="status-dot"></span>
+          <div class="controller-text">
+            <h2></h2>
+            <p class="serial"></p>
+            <p class="last-seen"></p>
+          </div>
+        </div>
+        <a class="open-link" target="_blank" rel="noreferrer">Открыть</a>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

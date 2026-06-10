@@ -36,11 +36,14 @@ sudo python3 install.py
 - Telegram bot token от `@BotFather`;
 - Telegram user IDs админов;
 - Telegram user IDs разрешенных пользователей;
+- публичный HTTPS URL для Telegram Mini App, если приложение нужно включить сразу;
+- локальный порт Mini App, по умолчанию `8088`;
 - интервал проверки;
 - отправлять ли уведомления об уже упавших контроллерах при первом запуске.
 
 SMTP больше не нужен. Backup скачивается через Telegram-команду `/backup`.
 Интерфейс бота полностью на русском. Списки объектов постраничные, по 12 объектов на страницу.
+Если задан `WEBAPP_PUBLIC_URL`, бот также запускает Telegram Mini App.
 
 ## Повторный запуск установщика
 
@@ -96,6 +99,11 @@ TELEGRAM_USERS_FILE=.state/telegram_users.json
 TELEGRAM_TIMEOUT_SECONDS=30
 
 BACKUP_DIR=.backups
+
+WEBAPP_PUBLIC_URL=https://176.124.201.26.sslip.io
+WEBAPP_HOST=127.0.0.1
+WEBAPP_PORT=8088
+WEBAPP_AUTH_MAX_AGE_SECONDS=86400
 ```
 
 Права на `.env`:
@@ -116,6 +124,49 @@ sudo chmod 600 /opt/wb-cloud-watcher/.env
 ```dotenv
 TELEGRAM_BOT_TOKEN=123456789:AA...
 ```
+
+## Telegram Mini App
+
+Mini App включается переменной:
+
+```dotenv
+WEBAPP_PUBLIC_URL=https://176.124.201.26.sslip.io
+```
+
+Встроенный web-сервер слушает только localhost:
+
+```dotenv
+WEBAPP_HOST=127.0.0.1
+WEBAPP_PORT=8088
+```
+
+Telegram требует публичный HTTPS URL. Если отдельного домена нет, для VPS можно использовать `sslip.io`:
+
+```text
+https://176.124.201.26.sslip.io
+```
+
+Это имя автоматически резолвится в `176.124.201.26`. Для TLS и reverse proxy удобно поставить Caddy:
+
+```bash
+sudo apt install -y caddy
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
+176.124.201.26.sslip.io {
+    reverse_proxy 127.0.0.1:8088
+}
+EOF
+sudo systemctl reload caddy
+```
+
+После изменения `.env` перезапустить сервис:
+
+```bash
+sudo systemctl restart wb-cloud-watcher-bot
+```
+
+Бот добавит кнопку `Открыть приложение` в `/start` и настроит кнопку меню Telegram `Статус объектов`.
+
+Доступ к `/api/controllers` проверяется по Telegram `initData`, поэтому открыть API из обычного браузера без запуска из Telegram нельзя. После проверки подписи дополнительно проверяется approved/admin список пользователей.
 
 ## Админы и пользователи
 

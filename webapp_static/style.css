@@ -1,0 +1,254 @@
+:root {
+  color-scheme: light dark;
+  --bg: var(--tg-theme-bg-color, #f5f7fb);
+  --text: var(--tg-theme-text-color, #17202a);
+  --muted: var(--tg-theme-hint-color, #687789);
+  --panel: var(--tg-theme-secondary-bg-color, #ffffff);
+  --button: var(--tg-theme-button-color, #2477f2);
+  --button-text: var(--tg-theme-button-text-color, #ffffff);
+  --border: rgba(104, 119, 137, 0.22);
+  --ok: #16835f;
+  --alert: #c93636;
+  --warn-bg: rgba(201, 54, 54, 0.1);
+  --ok-bg: rgba(22, 131, 95, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+a {
+  font: inherit;
+}
+
+.app-shell {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding: max(18px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom));
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.eyebrow {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.icon-button:active {
+  transform: translateY(1px);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.summary-item {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.summary-item strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.summary-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summary-item.is-ok strong {
+  color: var(--ok);
+}
+
+.summary-item.is-alert strong {
+  color: var(--alert);
+}
+
+.toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 70%, var(--bg));
+}
+
+.segment {
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.segment.is-active {
+  background: var(--button);
+  color: var(--button-text);
+}
+
+input[type="search"] {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 12px;
+  outline: none;
+}
+
+.status-line {
+  min-height: 20px;
+  margin: 8px 2px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.controller-list {
+  display: grid;
+  gap: 8px;
+}
+
+.controller-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 78px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.controller-card.is-offline {
+  background: color-mix(in srgb, var(--warn-bg) 42%, var(--panel));
+}
+
+.controller-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-dot {
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 4px var(--ok-bg);
+}
+
+.controller-card.is-offline .status-dot {
+  background: var(--alert);
+  box-shadow: 0 0 0 4px var(--warn-bg);
+}
+
+.controller-text {
+  min-width: 0;
+}
+
+.controller-text h2 {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.serial,
+.last-seen {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.open-link {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--button-text);
+  padding: 0 12px;
+  text-decoration: none;
+}
+
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 24px 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
+@media (min-width: 720px) {
+  .toolbar {
+    grid-template-columns: 320px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .controller-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

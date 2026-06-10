@@ -36,6 +36,7 @@ class TelegramConfig:
     users_file: Path
     backup_dir: Path
     timeout_seconds: int
+    webapp_public_url: str = ""
 
 
 def read_telegram_config() -> TelegramConfig:
@@ -60,6 +61,7 @@ def read_telegram_config() -> TelegramConfig:
         users_file=users_file,
         backup_dir=backup_dir,
         timeout_seconds=int(env("TELEGRAM_TIMEOUT_SECONDS", "30")),
+        webapp_public_url=env("WEBAPP_PUBLIC_URL").rstrip("/"),
     )
 
 
@@ -74,6 +76,12 @@ def parse_allowed_user_ids(raw: str) -> set[int]:
 
 
 def run_bot(wb_config: Config, tg_config: TelegramConfig) -> int:
+    from .webapp import read_webapp_config, start_webapp_server
+
+    webapp_config = read_webapp_config()
+    start_webapp_server(wb_config, tg_config, webapp_config, lambda user_id: is_allowed(tg_config, user_id))
+    configure_webapp_menu(tg_config)
+
     offset: int | None = None
     next_check_at = 0.0
     startup_check_done = False
@@ -172,9 +180,9 @@ def handle_update(wb_config: Config, tg_config: TelegramConfig, update: dict[str
         serial_or_name = parts[1].strip() if len(parts) > 1 else None
         send_status(wb_config, tg_config, chat_id, serial_or_name)
     elif text.startswith("/start") or text.startswith("/help"):
-        send_message(tg_config, chat_id, help_text(), main_menu_keyboard())
+        send_message(tg_config, chat_id, help_text(), main_menu_keyboard(tg_config.webapp_public_url))
     else:
-        send_message(tg_config, chat_id, help_text(), main_menu_keyboard())
+        send_message(tg_config, chat_id, help_text(), main_menu_keyboard(tg_config.webapp_public_url))
 
 
 def handle_callback(wb_config: Config, tg_config: TelegramConfig, callback: dict[str, Any]) -> None:
@@ -371,14 +379,18 @@ def help_text() -> str:
     )
 
 
-def main_menu_keyboard() -> dict[str, Any]:
-    return inline_keyboard(
+def main_menu_keyboard(webapp_public_url: str = "") -> dict[str, Any]:
+    rows = []
+    if webapp_public_url:
+        rows.append([web_app_button("Открыть приложение", webapp_public_url)])
+    rows.extend(
         [
             [callback_button("Все объекты", "status:all:0")],
             [callback_button("Только упавшие", "status:offline:0")],
             [callback_button("Пользователи", "admin:users"), callback_button("Резервная копия", "admin:backup")],
         ]
     )
+    return inline_keyboard(rows)
 
 
 def controllers_keyboard(controllers: list[Controller], *, page: int = 0, mode: str = "all") -> dict[str, Any]:
@@ -441,6 +453,29 @@ def callback_button(text: str, data: str) -> dict[str, str]:
 
 def url_button(text: str, url: str) -> dict[str, str]:
     return {"text": text, "url": url}
+
+
+def web_app_button(text: str, url: str) -> dict[str, Any]:
+    return {"text": text, "web_app": {"url": url}}
+
+
+def configure_webapp_menu(tg_config: TelegramConfig) -> None:
+    if not tg_config.webapp_public_url:
+        return
+    try:
+        telegram_request(
+            tg_config,
+            "setChatMenuButton",
+            {
+                "menu_button": {
+                    "type": "web_app",
+                    "text": "Статус объектов",
+                    "web_app": {"url": tg_config.webapp_public_url},
+                }
+            },
+        )
+    except Exception as exc:
+        print(f"setChatMenuButton failed: {exc}", file=sys.stderr)
 
 
 def html_pre(value: str) -> str:
