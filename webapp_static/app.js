@@ -4,6 +4,10 @@ const state = {
   filter: "all",
   query: "",
   loading: false,
+  view: "status",
+  history: [],
+  isAdmin: false,
+  users: [],
   preferences: {
     theme: "dark",
     offline_delay_seconds: 0,
@@ -18,10 +22,19 @@ const elements = {
   searchInput: document.querySelector("#searchInput"),
   statusLine: document.querySelector("#statusLine"),
   controllerList: document.querySelector("#controllerList"),
+  historyList: document.querySelector("#historyList"),
   template: document.querySelector("#controllerTemplate"),
+  historyTemplate: document.querySelector("#historyTemplate"),
   segments: Array.from(document.querySelectorAll(".segment")),
+  viewTabs: Array.from(document.querySelectorAll(".view-tab")),
+  panels: Array.from(document.querySelectorAll("[data-panel]")),
   themeButtons: Array.from(document.querySelectorAll("[data-theme]")),
   delaySelect: document.querySelector("#delaySelect"),
+  adminPanel: document.querySelector("#adminPanel"),
+  userInput: document.querySelector("#userInput"),
+  addUserButton: document.querySelector("#addUserButton"),
+  removeUserButton: document.querySelector("#removeUserButton"),
+  userList: document.querySelector("#userList"),
 };
 
 tg?.ready();
@@ -55,12 +68,40 @@ for (const button of elements.themeButtons) {
 elements.delaySelect.addEventListener("change", () => {
   savePreferences({ offline_delay_seconds: Number(elements.delaySelect.value) });
 });
+elements.addUserButton.addEventListener("click", () => changeUser("POST"));
+elements.removeUserButton.addEventListener("click", () => changeUser("DELETE"));
+
+for (const tab of elements.viewTabs) {
+  tab.addEventListener("click", () => setView(tab.dataset.view));
+}
 
 boot();
 
 async function boot() {
+  await loadMe();
   await loadPreferences();
   await loadControllers();
+  await loadHistory();
+  if (state.isAdmin) {
+    await loadUsers();
+  }
+}
+
+async function loadMe() {
+  if (!tg?.initData) {
+    return;
+  }
+  const response = await fetch("/api/me", { headers: authHeaders() });
+  const payload = await response.json();
+  if (response.ok) {
+    state.isAdmin = Boolean(payload.is_admin);
+    elements.adminPanel.hidden = !state.isAdmin;
+    for (const button of elements.themeButtons) {
+      if (button.dataset.theme === "matrix") {
+        button.hidden = !state.isAdmin;
+      }
+    }
+  }
 }
 
 async function loadPreferences() {
@@ -112,6 +153,22 @@ function applyPreferences(preferences) {
   elements.delaySelect.value = String(preferences.offline_delay_seconds ?? 0);
 }
 
+function setView(view) {
+  state.view = view;
+  for (const tab of elements.viewTabs) {
+    tab.classList.toggle("is-active", tab.dataset.view === view);
+  }
+  for (const panel of elements.panels) {
+    panel.hidden = panel.dataset.panel !== view;
+  }
+  if (view === "history") {
+    loadHistory();
+  }
+  if (view === "settings" && state.isAdmin) {
+    loadUsers();
+  }
+}
+
 async function loadControllers() {
   if (state.loading) {
     return;
@@ -142,6 +199,57 @@ async function loadControllers() {
     state.loading = false;
     elements.refreshButton.disabled = false;
   }
+}
+
+async function loadHistory() {
+  if (!tg?.initData) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/history", { headers: authHeaders() });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.message || payload.error || "Ошибка истории");
+    }
+    state.history = payload.events || [];
+    renderHistory();
+  } catch (error) {
+    renderHistoryError(error.message);
+  }
+}
+
+async function loadUsers() {
+  if (!state.isAdmin) {
+    return;
+  }
+  const response = await fetch("/api/users", { headers: authHeaders() });
+  const payload = await response.json();
+  if (response.ok) {
+    state.users = payload.users || [];
+    renderUsers();
+  }
+}
+
+async function changeUser(method) {
+  const value = elements.userInput.value.trim();
+  if (!value) {
+    return;
+  }
+  const response = await fetch("/api/users", {
+    method,
+    headers: {
+      ...authHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ user: value }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    elements.statusLine.textContent = payload.message || payload.error || "Не удалось изменить пользователя";
+    return;
+  }
+  elements.userInput.value = "";
+  await loadUsers();
 }
 
 function renderSummary(summary) {
@@ -187,53 +295,49 @@ function renderControllers() {
       ? `Последний пинг: ${formatDate(controller.last_seen)}`
       : "Последний пинг: нет данных";
     const openLink = node.querySelector(".open-link");
-    const pingButton = node.querySelector(".ping-button");
     const hasLocalAccess = !controller.online && controller.local_url;
     openLink.href = controller.access_url || controller.remote_url;
     openLink.textContent = hasLocalAccess ? "Локально" : "Открыть";
-    pingButton.hidden = !hasLocalAccess;
-    pingButton.addEventListener("click", () => pingLocalAccess(controller));
     elements.controllerList.append(node);
   }
 }
 
-async function pingLocalAccess(controller) {
-  if (!controller.local_url) {
+function renderHistory() {
+  elements.historyList.replaceChildren();
+  if (state.history.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "История пока пустая.";
+    elements.historyList.append(empty);
     return;
   }
-  const ok = window.confirm("Перед проверкой включите VPN до объекта. Проверить локальный веб-интерфейс сейчас?");
-  if (!ok) {
-    return;
-  }
-
-  const startedAt = performance.now();
-  try {
-    await probeImage(`${controller.local_url.replace(/\/$/, "")}/favicon.ico?_=${Date.now()}`, 3500);
-    const elapsed = Math.max(1, Math.round(performance.now() - startedAt));
-    elements.statusLine.textContent = `Локальный доступ ответил: ${controller.local_ip}, примерно ${elapsed} мс.`;
-  } catch (error) {
-    elements.statusLine.textContent = `Локальный доступ не ответил. Проверьте VPN до объекта и адрес ${controller.local_ip}.`;
+  for (const event of state.history) {
+    const node = elements.historyTemplate.content.firstElementChild.cloneNode(true);
+    node.classList.toggle("is-offline", event.type === "offline");
+    node.querySelector(".history-status").textContent = event.type === "online" ? "UP" : "DOWN";
+    node.querySelector("h2").textContent = event.name || event.id;
+    node.querySelector("p").textContent = `${formatTimestamp(event.timestamp)}${event.organization_id ? ` · ${shortId(event.organization_id)}` : ""}`;
+    elements.historyList.append(node);
   }
 }
 
-function probeImage(url, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    const timer = window.setTimeout(() => {
-      image.onload = null;
-      image.onerror = null;
-      reject(new Error("timeout"));
-    }, timeoutMs);
-    image.onload = () => {
-      window.clearTimeout(timer);
-      resolve();
-    };
-    image.onerror = () => {
-      window.clearTimeout(timer);
-      resolve();
-    };
-    image.src = url;
-  });
+function renderHistoryError(message) {
+  elements.historyList.replaceChildren();
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  empty.textContent = `Не удалось загрузить историю: ${message}`;
+  elements.historyList.append(empty);
+}
+
+function renderUsers() {
+  elements.userList.replaceChildren();
+  for (const user of state.users) {
+    const row = document.createElement("div");
+    row.className = "user-row";
+    const username = user.username ? `@${user.username}` : "без username";
+    row.textContent = `${username} · ${user.id}${user.admin ? " · админ" : ""}`;
+    elements.userList.append(row);
+  }
 }
 
 function renderError(message) {
@@ -257,6 +361,10 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatTimestamp(value) {
+  return formatDate(new Date(value * 1000).toISOString());
 }
 
 function authHeaders() {

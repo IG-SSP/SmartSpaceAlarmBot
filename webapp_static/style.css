@@ -142,6 +142,27 @@ h1 {
   margin-bottom: 10px;
 }
 
+.view-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.view-tab {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.view-tab.is-active {
+  background: var(--button);
+  color: var(--button-text);
+}
+
 .settings-panel {
   display: grid;
   gap: 10px;
@@ -189,7 +210,8 @@ h1 {
   color: var(--button-text);
 }
 
-input[type="search"] {
+input[type="search"],
+input[type="text"] {
   width: 100%;
   min-height: 42px;
   border: 1px solid var(--border);
@@ -217,7 +239,8 @@ select {
   font-size: 13px;
 }
 
-.controller-list {
+.controller-list,
+.history-list {
   display: grid;
   gap: 8px;
 }
@@ -288,8 +311,7 @@ select {
   flex: 0 0 auto;
 }
 
-.open-link,
-.ping-button {
+.open-link {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -300,14 +322,7 @@ select {
   color: var(--button-text);
   padding: 0 12px;
   text-decoration: none;
-  border: 0;
   cursor: pointer;
-}
-
-.ping-button {
-  background: transparent;
-  color: var(--button);
-  border: 1px solid var(--border);
 }
 
 .empty-state {
@@ -316,6 +331,66 @@ select {
   padding: 24px 14px;
   color: var(--muted);
   text-align: center;
+}
+
+.history-item,
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.history-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 54px;
+  min-height: 28px;
+  border-radius: 6px;
+  background: var(--ok-bg);
+  color: var(--ok);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.history-item.is-offline .history-status {
+  background: var(--warn-bg);
+  color: var(--alert);
+}
+
+.history-item h2 {
+  margin: 0 0 3px;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.history-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.user-form {
+  display: grid;
+  gap: 8px;
+}
+
+.user-form button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--button-text);
+  cursor: pointer;
+}
+
+.user-list {
+  display: grid;
+  gap: 6px;
 }
 
 @media (min-width: 720px) {
@@ -331,5 +406,9 @@ select {
 
   .controller-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .user-form {
+    grid-template-columns: minmax(0, 1fr) 110px 110px;
   }
 }

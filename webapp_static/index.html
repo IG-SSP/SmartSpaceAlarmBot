@@ -34,39 +34,74 @@
         </article>
       </section>
 
-      <section class="toolbar" aria-label="Фильтры">
-        <div class="segmented" role="tablist" aria-label="Фильтр статуса">
-          <button class="segment is-active" type="button" data-filter="all">Все</button>
-          <button class="segment" type="button" data-filter="offline">Упавшие</button>
-          <button class="segment" type="button" data-filter="online">Онлайн</button>
-        </div>
-        <input id="searchInput" type="search" placeholder="Поиск по имени или serial" autocomplete="off" />
+      <nav class="view-tabs" aria-label="Разделы">
+        <button class="view-tab is-active" type="button" data-view="status">Статус</button>
+        <button class="view-tab" type="button" data-view="history">История</button>
+        <button class="view-tab" type="button" data-view="settings">Настройки</button>
+      </nav>
+
+      <section class="view-panel" data-panel="status">
+        <section class="toolbar" aria-label="Фильтры">
+          <div class="segmented" role="tablist" aria-label="Фильтр статуса">
+            <button class="segment is-active" type="button" data-filter="all">Все</button>
+            <button class="segment" type="button" data-filter="offline">Упавшие</button>
+            <button class="segment" type="button" data-filter="online">Онлайн</button>
+          </div>
+          <input id="searchInput" type="search" placeholder="Поиск по имени или serial" autocomplete="off" />
+        </section>
+        <section class="controller-list" id="controllerList" aria-live="polite"></section>
       </section>
 
-      <section class="settings-panel" aria-label="Настройки уведомлений">
-        <div class="settings-row">
-          <span>Тема</span>
-          <div class="segmented compact">
-            <button class="segment" type="button" data-theme="dark">Темная</button>
-            <button class="segment" type="button" data-theme="light">Светлая</button>
-            <button class="segment" type="button" data-theme="matrix">Матрица</button>
+      <section class="view-panel" data-panel="history" hidden>
+        <section class="history-list" id="historyList"></section>
+      </section>
+
+      <section class="view-panel" data-panel="settings" hidden>
+        <section class="settings-panel" aria-label="Настройки уведомлений">
+          <div class="settings-row">
+            <span>Тема уведомлений</span>
+            <div class="segmented compact">
+              <button class="segment" type="button" data-theme="dark">Темная</button>
+              <button class="segment" type="button" data-theme="light">Светлая</button>
+              <button class="segment" type="button" data-theme="matrix">Матрица</button>
+            </div>
           </div>
-        </div>
-        <div class="settings-row">
-          <span>Уведомлять через</span>
-          <select id="delaySelect">
-            <option value="0">сразу</option>
-            <option value="300">5 минут</option>
-            <option value="900">15 минут</option>
-            <option value="1800">30 минут</option>
-            <option value="3600">1 час</option>
-          </select>
-        </div>
+          <div class="settings-row">
+            <span>Уведомлять об offline через</span>
+            <select id="delaySelect">
+              <option value="0">сразу</option>
+              <option value="300">5 минут</option>
+              <option value="900">15 минут</option>
+              <option value="1800">30 минут</option>
+              <option value="3600">1 час</option>
+            </select>
+          </div>
+        </section>
+        <section class="settings-panel admin-panel" id="adminPanel" hidden>
+          <div class="settings-row">
+            <span>Пользователи</span>
+            <div class="user-form">
+              <input id="userInput" type="text" placeholder="@username или Telegram ID" autocomplete="off" />
+              <button id="addUserButton" type="button">Добавить</button>
+              <button id="removeUserButton" type="button">Удалить</button>
+            </div>
+          </div>
+          <div class="user-list" id="userList"></div>
+        </section>
       </section>
 
       <p class="status-line" id="statusLine">Загрузка...</p>
-      <section class="controller-list" id="controllerList" aria-live="polite"></section>
     </main>
+
+    <template id="historyTemplate">
+      <article class="history-item">
+        <span class="history-status"></span>
+        <div>
+          <h2></h2>
+          <p></p>
+        </div>
+      </article>
+    </template>
 
     <template id="controllerTemplate">
       <article class="controller-card">
@@ -79,10 +114,7 @@
             <p class="last-seen"></p>
           </div>
         </div>
-        <div class="actions">
-          <button class="ping-button" type="button">Пинг</button>
-          <a class="open-link" target="_blank" rel="noreferrer">Открыть</a>
-        </div>
+        <a class="open-link" target="_blank" rel="noreferrer">Открыть</a>
       </article>
     </template>
 

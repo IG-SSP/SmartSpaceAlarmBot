@@ -13,11 +13,16 @@ from wb_cloud_watcher.bot import (
     format_telegram_notification_body,
     get_user_preferences,
     has_ip_note,
+    history_event,
     get_allowed_user_ids,
     get_admin_user_ids,
     parse_page,
     remove_user_command,
     parse_allowed_user_ids,
+    remember_user_profile,
+    resolve_user_identifier,
+    save_history,
+    load_history,
     set_user_theme,
     set_user_offline_delay,
 )
@@ -133,7 +138,55 @@ class BotTests(unittest.TestCase):
             set_user_theme(tg_config, 1, "matrix")
             set_user_offline_delay(tg_config, 1, 900)
 
-            self.assertEqual(get_user_preferences(tg_config, 1), {"theme": "matrix", "offline_delay_seconds": 900})
+            self.assertEqual(get_user_preferences(tg_config, 1), {"theme": "dark", "offline_delay_seconds": 900})
+
+    def test_matrix_theme_is_admin_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tg_config = TelegramConfig(
+                bot_token="token",
+                allowed_user_ids={1},
+                admin_user_ids={2},
+                users_file=Path(tmp) / "users.json",
+                backup_dir=Path(tmp) / "backups",
+                timeout_seconds=30,
+            )
+
+            set_user_theme(tg_config, 1, "matrix")
+            set_user_theme(tg_config, 2, "matrix")
+
+            self.assertEqual(get_user_preferences(tg_config, 1)["theme"], "dark")
+            self.assertEqual(get_user_preferences(tg_config, 2)["theme"], "matrix")
+
+    def test_resolve_user_identifier_supports_known_username(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tg_config = TelegramConfig(
+                bot_token="token",
+                allowed_user_ids={1},
+                admin_user_ids={2},
+                users_file=Path(tmp) / "users.json",
+                backup_dir=Path(tmp) / "backups",
+                timeout_seconds=30,
+            )
+            remember_user_profile(tg_config, {"id": 3, "username": "demo"})
+
+            self.assertEqual(resolve_user_identifier(tg_config, "@demo"), 3)
+            self.assertEqual(resolve_user_identifier(tg_config, "3"), 3)
+
+    def test_history_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tg_config = TelegramConfig(
+                bot_token="token",
+                allowed_user_ids={1},
+                admin_user_ids={2},
+                users_file=Path(tmp) / "users.json",
+                backup_dir=Path(tmp) / "backups",
+                timeout_seconds=30,
+            )
+            event = history_event(Controller(controller_id="ABC123", name="Boiler", online=False), "offline", 123)
+
+            save_history(tg_config, [event])
+
+            self.assertEqual(load_history(tg_config), [event])
 
     def test_build_multipart_body_contains_file(self):
         with tempfile.TemporaryDirectory() as tmp:

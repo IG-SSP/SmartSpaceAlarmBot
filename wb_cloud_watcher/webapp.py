@@ -42,11 +42,28 @@ def start_webapp_server(
     is_allowed_user: Callable[[int], bool],
     get_user_preferences: Callable[[int], dict[str, Any]] | None = None,
     set_user_preferences: Callable[[int, dict[str, Any]], None] | None = None,
+    get_history: Callable[[], list[dict[str, Any]]] | None = None,
+    is_admin_user: Callable[[int], bool] | None = None,
+    list_users: Callable[[], dict[str, Any]] | None = None,
+    add_user: Callable[[str], dict[str, Any]] | None = None,
+    remove_user: Callable[[str], dict[str, Any]] | None = None,
 ) -> ThreadingHTTPServer | None:
     if not webapp_config.public_url:
         return None
 
-    handler = build_handler(wb_config, tg_config, webapp_config, is_allowed_user, get_user_preferences, set_user_preferences)
+    handler = build_handler(
+        wb_config,
+        tg_config,
+        webapp_config,
+        is_allowed_user,
+        get_user_preferences,
+        set_user_preferences,
+        get_history,
+        is_admin_user,
+        list_users,
+        add_user,
+        remove_user,
+    )
     server = ThreadingHTTPServer((webapp_config.host, webapp_config.port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -61,6 +78,11 @@ def build_handler(
     is_allowed_user: Callable[[int], bool],
     get_user_preferences: Callable[[int], dict[str, Any]] | None = None,
     set_user_preferences: Callable[[int, dict[str, Any]], None] | None = None,
+    get_history: Callable[[], list[dict[str, Any]]] | None = None,
+    is_admin_user: Callable[[int], bool] | None = None,
+    list_users: Callable[[], dict[str, Any]] | None = None,
+    add_user: Callable[[str], dict[str, Any]] | None = None,
+    remove_user: Callable[[str], dict[str, Any]] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class WebAppHandler(BaseHTTPRequestHandler):
         server_version = "SmartSpaceAlarmBotWebApp/0.1"
@@ -93,12 +115,28 @@ def build_handler(
             if parsed.path == "/api/preferences":
                 self.handle_preferences()
                 return
+            if parsed.path == "/api/history":
+                self.handle_history()
+                return
+            if parsed.path == "/api/users":
+                self.handle_users()
+                return
             self.send_json(404, {"error": "not_found"})
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/api/preferences":
                 self.handle_update_preferences()
+                return
+            if parsed.path == "/api/users":
+                self.handle_add_user()
+                return
+            self.send_json(404, {"error": "not_found"})
+
+        def do_DELETE(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/users":
+                self.handle_remove_user()
                 return
             self.send_json(404, {"error": "not_found"})
 
@@ -107,7 +145,8 @@ def build_handler(
             if user is None:
                 return
             preferences = get_user_preferences(user["id"]) if get_user_preferences else {}
-            self.send_json(200, {"user": user, "preferences": preferences})
+            is_admin = is_admin_user(user["id"]) if is_admin_user else False
+            self.send_json(200, {"user": user, "preferences": preferences, "is_admin": is_admin})
 
         def handle_preferences(self) -> None:
             user = self.authorize()
@@ -116,6 +155,44 @@ def build_handler(
             preferences = get_user_preferences(user["id"]) if get_user_preferences else {}
             self.send_json(200, {"preferences": preferences})
 
+        def handle_history(self) -> None:
+            user = self.authorize()
+            if user is None:
+                return
+            self.send_json(200, {"events": list(reversed((get_history or (lambda: []))()))[:200]})
+
+        def handle_users(self) -> None:
+            user = self.authorize_admin()
+            if user is None:
+                return
+            self.send_json(200, list_users() if list_users else {"users": []})
+
+        def handle_add_user(self) -> None:
+            user = self.authorize_admin()
+            if user is None:
+                return
+            if add_user is None:
+                self.send_json(503, {"error": "users_unavailable"})
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            result = add_user(str(payload.get("user") or ""))
+            self.send_json(200 if result.get("ok") else 400, result)
+
+        def handle_remove_user(self) -> None:
+            user = self.authorize_admin()
+            if user is None:
+                return
+            if remove_user is None:
+                self.send_json(503, {"error": "users_unavailable"})
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            result = remove_user(str(payload.get("user") or ""))
+            self.send_json(200 if result.get("ok") else 400, result)
+
         def handle_update_preferences(self) -> None:
             user = self.authorize()
             if user is None:
@@ -123,17 +200,23 @@ def build_handler(
             if set_user_preferences is None or get_user_preferences is None:
                 self.send_json(503, {"error": "preferences_unavailable"})
                 return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            set_user_preferences(user["id"], payload)
+            self.send_json(200, {"preferences": get_user_preferences(user["id"])})
+
+        def read_json_payload(self) -> dict[str, Any] | None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             except Exception:
                 self.send_json(400, {"error": "bad_json"})
-                return
+                return None
             if not isinstance(payload, dict):
                 self.send_json(400, {"error": "bad_json"})
-                return
-            set_user_preferences(user["id"], payload)
-            self.send_json(200, {"preferences": get_user_preferences(user["id"])})
+                return None
+            return payload
 
         def handle_controllers(self) -> None:
             user = self.authorize()
@@ -186,6 +269,15 @@ def build_handler(
             user_id = user.get("id")
             if not isinstance(user_id, int) or not is_allowed_user(user_id):
                 self.send_json(403, {"error": "forbidden", "user_id": user_id})
+                return None
+            return user
+
+        def authorize_admin(self) -> dict[str, Any] | None:
+            user = self.authorize()
+            if user is None:
+                return None
+            if not is_admin_user or not is_admin_user(user["id"]):
+                self.send_json(403, {"error": "admin_required"})
                 return None
             return user
 

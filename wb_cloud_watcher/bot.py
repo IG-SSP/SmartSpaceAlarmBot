@@ -92,7 +92,12 @@ def run_bot(wb_config: Config, tg_config: TelegramConfig) -> int:
         webapp_config,
         lambda user_id: is_allowed(tg_config, user_id),
         lambda user_id: get_user_preferences(tg_config, user_id),
-        lambda user_id, values: update_user_preferences(tg_config, user_id, sanitize_preferences(values)),
+        lambda user_id, values: update_user_preferences(tg_config, user_id, sanitize_preferences(values, is_admin(tg_config, user_id))),
+        lambda: load_history(tg_config),
+        lambda user_id: is_admin(tg_config, user_id),
+        lambda: list_user_profiles(tg_config),
+        lambda value: add_user_by_identifier(tg_config, value),
+        lambda value: remove_user_by_identifier(tg_config, value),
     )
     configure_webapp_menu(tg_config)
     try:
@@ -137,6 +142,7 @@ def check_and_notify(wb_config: Config, tg_config: TelegramConfig, *, include_cu
         first_run = not wb_config.state_file.exists()
         current = build_current_state(controllers, previous)
         save_state(wb_config.state_file, current)
+        append_history_events(tg_config, controllers, previous, first_run=first_run)
     except Exception as exc:
         print(f"background check failed: {exc}", file=sys.stderr)
         return
@@ -192,6 +198,45 @@ def build_current_state(controllers: list[Controller], previous: dict[str, dict[
             state["offline_since"] = now
         current[controller.controller_id] = state
     return current
+
+
+def append_history_events(
+    tg_config: TelegramConfig,
+    controllers: list[Controller],
+    previous: dict[str, dict[str, Any]],
+    *,
+    first_run: bool,
+) -> None:
+    events = load_history(tg_config)
+    now = int(time.time())
+    changed = False
+    for controller in controllers:
+        old = previous.get(controller.controller_id)
+        if old is None:
+            if first_run and not controller.online:
+                events.append(history_event(controller, "offline", now))
+                changed = True
+            continue
+        old_online = bool(old.get("online"))
+        if old_online == controller.online:
+            continue
+        events.append(history_event(controller, "online" if controller.online else "offline", now))
+        changed = True
+    if changed:
+        save_history(tg_config, events[-500:])
+
+
+def history_event(controller: Controller, event_type: str, timestamp: int) -> dict[str, Any]:
+    return {
+        "timestamp": timestamp,
+        "type": event_type,
+        "id": controller.controller_id,
+        "name": controller.name,
+        "online": controller.online,
+        "last_seen": controller.last_seen,
+        "local_ip": controller.local_ip,
+        "organization_id": controller.organization_id,
+    }
 
 
 def ensure_ip_notes(wb_config: Config) -> dict[str, int]:
@@ -262,6 +307,7 @@ def handle_update(wb_config: Config, tg_config: TelegramConfig, update: dict[str
     user_id = from_user.get("id")
     if not isinstance(chat_id, int) or not isinstance(user_id, int):
         return
+    remember_user_profile(tg_config, from_user)
 
     if not is_allowed(tg_config, user_id):
         send_message(tg_config, chat_id, f"Доступ не разрешен.\nВаш Telegram ID: <code>{user_id}</code>")
@@ -300,6 +346,8 @@ def handle_callback(wb_config: Config, tg_config: TelegramConfig, callback: dict
     chat_id = message.get("chat", {}).get("id")
     message_id = message.get("message_id")
     data = str(callback.get("data") or "")
+    if isinstance(user_id, int):
+        remember_user_profile(tg_config, from_user)
 
     if isinstance(callback_id, str):
         telegram_request(tg_config, "answerCallbackQuery", {"callback_query_id": callback_id})
@@ -667,16 +715,10 @@ def notification_keyboard(controller: Controller) -> dict[str, Any]:
     rows = []
     local_url = local_access_url(controller)
     if not controller.online and local_url:
-        rows.append([url_button("Локальный веб-интерфейс", local_url), url_button("Пинг локального", local_url)])
+        rows.append([url_button("Локальный веб-интерфейс", local_url)])
         rows.append([url_button("Удаленный доступ", remote_access_url(controller.controller_id))])
     else:
         rows.append([url_button("Открыть веб-интерфейс", preferred_access_url(controller))])
-    rows.extend(
-        [
-            [callback_button("Обновить объект", f"controller:{controller.controller_id}")],
-            [callback_button("Все объекты", "status:all:0")],
-        ]
-    )
     return inline_keyboard(rows)
 
 
@@ -694,11 +736,13 @@ def format_light_notification(controller: Controller, old_online: bool | None, o
     lines = [
         f"{icon} <b>{html.escape(controller.name)}</b>",
         f"Статус: <b>{status}</b>",
-        f"Serial: <code>{html.escape(controller.controller_id)}</code>",
     ]
+    if controller.last_seen:
+        lines.append(f"Последний пинг: <b>{html.escape(format_readable_datetime(controller.last_seen))}</b>")
     if offline_seconds and not controller.online:
         lines.append(f"Оффлайн: <b>{format_duration(offline_seconds)}</b>")
-    append_access_lines(lines, controller)
+    if not controller.online and local_access_url(controller):
+        lines.append("Перед локальным переходом включите VPN до объекта.")
     return "\n".join(lines)
 
 
@@ -707,13 +751,13 @@ def format_dark_notification(controller: Controller, old_online: bool | None, of
     lines = [
         f"<b>{html.escape(controller.name)}</b>",
         f"Статус: <b>{status}</b>",
-        f"Serial: <code>{html.escape(controller.controller_id)}</code>",
     ]
     if controller.last_seen:
-        lines.append(f"Последний пинг: <code>{html.escape(controller.last_seen)}</code>")
+        lines.append(f"Последний пинг: <code>{html.escape(format_readable_datetime(controller.last_seen))}</code>")
     if offline_seconds and not controller.online:
         lines.append(f"Оффлайн: <b>{format_duration(offline_seconds)}</b>")
-    append_access_lines(lines, controller)
+    if not controller.online and local_access_url(controller):
+        lines.append("Перед локальным переходом включите VPN до объекта.")
     return "\n".join(lines)
 
 
@@ -723,17 +767,14 @@ def format_matrix_notification(controller: Controller, old_online: bool | None, 
         "SMARTSPACE::WATCHER",
         f"OBJECT={controller.name}",
         f"STATUS={status}",
-        f"SERIAL={controller.controller_id}",
     ]
     if controller.last_seen:
-        lines.append(f"LAST_PING={controller.last_seen}")
+        lines.append(f"LAST_PING={format_readable_datetime(controller.last_seen)}")
     if offline_seconds and not controller.online:
         lines.append(f"OFFLINE_FOR={format_duration(offline_seconds)}")
     local_url = local_access_url(controller)
     if not controller.online and local_url:
         lines.append("VPN_REQUIRED=TRUE")
-        lines.append(f"LOCAL={local_url}")
-    lines.append(f"REMOTE={remote_access_url(controller.controller_id)}")
     return "\n".join(lines)
 
 
@@ -743,6 +784,14 @@ def append_access_lines(lines: list[str], controller: Controller) -> None:
         lines.append("Перед локальным переходом включите VPN до объекта.")
         lines.append(f"Локальный доступ: {html.escape(local_url)}")
     lines.append(f"Удаленный доступ: {html.escape(remote_access_url(controller.controller_id))}")
+
+
+def format_readable_datetime(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return parsed.astimezone().strftime("%d.%m.%Y %H:%M")
 
 
 def format_duration(seconds: int) -> str:
@@ -797,6 +846,7 @@ def save_user_access(tg_config: TelegramConfig, access: dict[str, set[int]]) -> 
         "allowed": sorted(access.get("allowed", set()) | access.get("admins", set())),
         "admins": sorted(access.get("admins", set())),
         "preferences": old_payload.get("preferences", {}),
+        "profiles": old_payload.get("profiles", {}),
     }
     tg_config.users_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     try:
@@ -866,13 +916,13 @@ def get_user_preferences(tg_config: TelegramConfig, user_id: int) -> dict[str, A
     data = load_users_payload(tg_config)
     raw = data.get("preferences", {}).get(str(user_id), {})
     return {
-        "theme": normalize_theme(str(raw.get("theme") or DEFAULT_THEME)),
+        "theme": normalize_theme(str(raw.get("theme") or DEFAULT_THEME), allow_matrix=is_admin(tg_config, user_id)),
         "offline_delay_seconds": normalize_delay(raw.get("offline_delay_seconds", DEFAULT_OFFLINE_DELAY_SECONDS)),
     }
 
 
 def set_user_theme(tg_config: TelegramConfig, user_id: int, theme: str) -> None:
-    update_user_preferences(tg_config, user_id, {"theme": normalize_theme(theme)})
+    update_user_preferences(tg_config, user_id, {"theme": normalize_theme(theme, allow_matrix=is_admin(tg_config, user_id))})
 
 
 def set_user_offline_delay(tg_config: TelegramConfig, user_id: int, delay_seconds: int) -> None:
@@ -887,10 +937,10 @@ def update_user_preferences(tg_config: TelegramConfig, user_id: int, values: dic
     save_users_payload(tg_config, data)
 
 
-def sanitize_preferences(values: dict[str, Any]) -> dict[str, Any]:
+def sanitize_preferences(values: dict[str, Any], allow_matrix: bool = False) -> dict[str, Any]:
     clean: dict[str, Any] = {}
     if "theme" in values:
-        clean["theme"] = normalize_theme(str(values["theme"]))
+        clean["theme"] = normalize_theme(str(values["theme"]), allow_matrix=allow_matrix)
     if "offline_delay_seconds" in values:
         clean["offline_delay_seconds"] = normalize_delay(values["offline_delay_seconds"])
     return clean
@@ -908,6 +958,7 @@ def load_users_payload(tg_config: TelegramConfig) -> dict[str, Any]:
     data.setdefault("allowed", sorted(set(tg_config.allowed_user_ids) | set(tg_config.admin_user_ids)))
     data.setdefault("admins", sorted(tg_config.admin_user_ids))
     data.setdefault("preferences", {})
+    data.setdefault("profiles", {})
     return data
 
 
@@ -920,7 +971,9 @@ def save_users_payload(tg_config: TelegramConfig, data: dict[str, Any]) -> None:
         pass
 
 
-def normalize_theme(theme: str) -> str:
+def normalize_theme(theme: str, *, allow_matrix: bool = True) -> str:
+    if theme == "matrix" and not allow_matrix:
+        return DEFAULT_THEME
     return theme if theme in THEMES else DEFAULT_THEME
 
 
@@ -955,6 +1008,102 @@ def save_notification_state(tg_config: TelegramConfig, state: dict[str, Any]) ->
 
 def notification_state_path(tg_config: TelegramConfig) -> Path:
     return tg_config.users_file.with_name("telegram_notifications.json")
+
+
+def history_path(tg_config: TelegramConfig) -> Path:
+    return tg_config.users_file.with_name("controller_history.json")
+
+
+def load_history(tg_config: TelegramConfig) -> list[dict[str, Any]]:
+    path = history_path(tg_config)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_history(tg_config: TelegramConfig, events: list[dict[str, Any]]) -> None:
+    path = history_path(tg_config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(events, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def remember_user_profile(tg_config: TelegramConfig, user: dict[str, Any]) -> None:
+    user_id = user.get("id")
+    if not isinstance(user_id, int):
+        return
+    data = load_users_payload(tg_config)
+    profiles = data.setdefault("profiles", {})
+    profile = profiles.setdefault(str(user_id), {})
+    for key in ("username", "first_name", "last_name"):
+        value = user.get(key)
+        if value:
+            profile[key] = str(value)
+    save_users_payload(tg_config, data)
+
+
+def list_user_profiles(tg_config: TelegramConfig) -> dict[str, Any]:
+    data = load_users_payload(tg_config)
+    allowed = set(int(value) for value in data.get("allowed", []))
+    admins = set(int(value) for value in data.get("admins", [])) | set(tg_config.admin_user_ids)
+    profiles = data.get("profiles", {})
+    users = []
+    for user_id in sorted(allowed | admins):
+        profile = profiles.get(str(user_id), {})
+        users.append(
+            {
+                "id": user_id,
+                "username": profile.get("username"),
+                "first_name": profile.get("first_name"),
+                "last_name": profile.get("last_name"),
+                "admin": user_id in admins,
+                "allowed": user_id in allowed or user_id in admins,
+            }
+        )
+    return {"users": users}
+
+
+def add_user_by_identifier(tg_config: TelegramConfig, value: str) -> dict[str, Any]:
+    user_id = resolve_user_identifier(tg_config, value)
+    if user_id is None:
+        return {"ok": False, "error": "unknown_user", "message": "Пользователь с таким username еще не писал боту. Используйте Telegram ID или попросите его открыть /start."}
+    access = load_user_access(tg_config)
+    access["allowed"].add(user_id)
+    save_user_access(tg_config, access)
+    return {"ok": True, "user_id": user_id}
+
+
+def remove_user_by_identifier(tg_config: TelegramConfig, value: str) -> dict[str, Any]:
+    user_id = resolve_user_identifier(tg_config, value)
+    if user_id is None:
+        return {"ok": False, "error": "unknown_user", "message": "Пользователь не найден среди известных username/ID."}
+    access = load_user_access(tg_config)
+    if user_id in access["admins"]:
+        return {"ok": False, "error": "admin_user", "message": "Админов нельзя удалить из Mini App. Измените TELEGRAM_ADMIN_USER_IDS в .env."}
+    access["allowed"].discard(user_id)
+    save_user_access(tg_config, access)
+    return {"ok": True, "user_id": user_id}
+
+
+def resolve_user_identifier(tg_config: TelegramConfig, value: str) -> int | None:
+    item = value.strip()
+    if not item:
+        return None
+    if item.isdigit():
+        return int(item)
+    username = item.lstrip("@").casefold()
+    data = load_users_payload(tg_config)
+    for user_id, profile in data.get("profiles", {}).items():
+        if str(profile.get("username") or "").casefold() == username:
+            return int(user_id)
+    return None
 
 
 def send_users(tg_config: TelegramConfig, chat_id: int) -> None:
