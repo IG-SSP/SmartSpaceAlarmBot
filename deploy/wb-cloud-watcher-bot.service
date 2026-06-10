@@ -1,0 +1,17 @@
+[Unit]
+Description=Wirenboard Cloud Watcher Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wb-cloud-watcher
+EnvironmentFile=/opt/wb-cloud-watcher/.env
+ExecStart=/usr/bin/python3 -m wb_cloud_watcher bot
+Restart=always
+RestartSec=10
+User=wbwatcher
+Group=wbwatcher
+
+[Install]
+WantedBy=multi-user.target
