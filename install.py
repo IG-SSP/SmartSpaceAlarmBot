@@ -5,15 +5,12 @@ import argparse
 import getpass
 import os
 import shutil
-import smtplib
-import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from pathlib import Path
 from typing import Iterable
 
@@ -35,16 +32,9 @@ class InstallAnswers:
     wb_token: str
     telegram_bot_token: str
     telegram_allowed_user_ids: str
+    telegram_admin_user_ids: str
     poll_interval_seconds: int
     notify_on_first_run: bool
-    send_backup: bool
-    backup_email_to: str
-    smtp_host: str
-    smtp_port: int
-    smtp_starttls: bool
-    smtp_user: str
-    smtp_password: str
-    smtp_from: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,12 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backup_path = create_backup(answers.install_dir, env_path, service_path)
     print(f"Backup created: {backup_path}")
-
-    if answers.send_backup:
-        send_backup_email(answers, backup_path)
-        print(f"Backup sent to {answers.backup_email_to}")
-    else:
-        print("Backup email skipped.")
+    print("Admins can download fresh backups from Telegram with /backup.")
 
     if not args.dry_run:
         print(f"\nService status: systemctl status {answers.service_name}")
@@ -97,32 +82,16 @@ def collect_answers() -> InstallAnswers:
     wb_token = prompt_wb_token(wb_email)
 
     telegram_bot_token = prompt_secret("Telegram bot token from @BotFather")
-    telegram_allowed_user_ids = prompt(
-        "Allowed Telegram user IDs, comma-separated. Use 0 first if you need to discover your id",
+    telegram_admin_user_ids = prompt(
+        "Admin Telegram user IDs, comma-separated. Use 0 first if you need to discover your id",
         "0",
+    )
+    telegram_allowed_user_ids = prompt(
+        "Allowed Telegram user IDs, comma-separated",
+        telegram_admin_user_ids,
     )
     poll_interval_seconds = prompt_int("Polling interval seconds", 60)
     notify_on_first_run = prompt_bool("Notify about already-offline controllers on first run", False)
-
-    print("\nBackup email")
-    print("The backup archive contains .env with access tokens. Send it only to a mailbox you control.")
-    send_backup = prompt_bool("Send backup by email after install", True)
-    backup_email_to = ""
-    smtp_host = ""
-    smtp_port = 587
-    smtp_starttls = True
-    smtp_user = ""
-    smtp_password = ""
-    smtp_from = ""
-
-    if send_backup:
-        backup_email_to = prompt("Backup recipient email", wb_email)
-        smtp_host = prompt("SMTP host", "")
-        smtp_port = prompt_int("SMTP port", 587)
-        smtp_starttls = prompt_bool("Use STARTTLS", True)
-        smtp_user = prompt("SMTP username", backup_email_to)
-        smtp_password = prompt_secret("SMTP password/app password")
-        smtp_from = prompt("SMTP from address", smtp_user)
 
     return InstallAnswers(
         install_dir=install_dir,
@@ -132,16 +101,9 @@ def collect_answers() -> InstallAnswers:
         wb_token=wb_token,
         telegram_bot_token=telegram_bot_token,
         telegram_allowed_user_ids=telegram_allowed_user_ids,
+        telegram_admin_user_ids=telegram_admin_user_ids,
         poll_interval_seconds=poll_interval_seconds,
         notify_on_first_run=notify_on_first_run,
-        send_backup=send_backup,
-        backup_email_to=backup_email_to,
-        smtp_host=smtp_host,
-        smtp_port=smtp_port,
-        smtp_starttls=smtp_starttls,
-        smtp_user=smtp_user,
-        smtp_password=smtp_password,
-        smtp_from=smtp_from,
     )
 
 
@@ -170,6 +132,9 @@ def prompt_wb_token(email: str) -> str:
 
 
 def copy_project(source_dir: Path, install_dir: Path) -> None:
+    if source_dir.resolve() == install_dir.resolve():
+        return
+
     install_dir.mkdir(parents=True, exist_ok=True)
     for item in source_dir.iterdir():
         if item.name in {".git", ".env", ".state", "__pycache__", ".pytest_cache", ".venv", "work", "outputs"}:
@@ -203,7 +168,10 @@ def write_env(answers: InstallAnswers) -> Path:
         "NTFY_PRIORITY": "default",
         "TELEGRAM_BOT_TOKEN": answers.telegram_bot_token,
         "TELEGRAM_ALLOWED_USER_IDS": answers.telegram_allowed_user_ids,
+        "TELEGRAM_ADMIN_USER_IDS": answers.telegram_admin_user_ids,
+        "TELEGRAM_USERS_FILE": ".state/telegram_users.json",
         "TELEGRAM_TIMEOUT_SECONDS": "30",
+        "BACKUP_DIR": ".backups",
     }
     env_path.write_text(format_env(values), encoding="utf-8")
     env_path.chmod(0o600)
@@ -252,41 +220,16 @@ def create_backup(install_dir: Path, env_path: Path, service_path: Path) -> Path
     return backup_path
 
 
-def send_backup_email(answers: InstallAnswers, backup_path: Path) -> None:
-    message = EmailMessage()
-    message["Subject"] = "Wirenboard Cloud Watcher backup"
-    message["From"] = answers.smtp_from
-    message["To"] = answers.backup_email_to
-    message.set_content(
-        "\n".join(
-            [
-                "Backup archive for Wirenboard Cloud Watcher is attached.",
-                "",
-                "Keep it private: it contains .env with access tokens.",
-            ]
-        )
-    )
-    message.add_attachment(
-        backup_path.read_bytes(),
-        maintype="application",
-        subtype="gzip",
-        filename=backup_path.name,
-    )
-
-    context = ssl.create_default_context()
-    with smtplib.SMTP(answers.smtp_host, answers.smtp_port, timeout=30) as smtp:
-        if answers.smtp_starttls:
-            smtp.starttls(context=context)
-        if answers.smtp_user:
-            smtp.login(answers.smtp_user, answers.smtp_password)
-        smtp.send_message(message)
-
-
 def install_systemd_service(service_path: Path, service_name: str) -> None:
     system_service = Path("/etc/systemd/system") / f"{service_name}.service"
     shutil.copy2(service_path, system_service)
     run(["systemctl", "daemon-reload"])
-    run(["systemctl", "enable", "--now", service_name])
+    run(["systemctl", "enable", service_name])
+    active = subprocess.run(["systemctl", "is-active", "--quiet", service_name], check=False)
+    if active.returncode == 0:
+        run(["systemctl", "restart", service_name])
+    else:
+        run(["systemctl", "start", service_name])
 
 
 def ensure_service_user(user: str, home: Path) -> None:

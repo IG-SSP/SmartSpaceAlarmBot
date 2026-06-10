@@ -1,221 +1,201 @@
-# Wirenboard Cloud Watcher
+# SmartSpaceAlarmBot
 
-Small monitor for Wirenboard.cloud controllers. It polls `GET /api/v1/controllers/`, detects `isAgentOk` state changes, and sends push notifications when a controller goes down or comes back.
+Telegram-бот для мониторинга контроллеров Wirenboard.cloud.
 
-The defaults follow the public Wirenboard.cloud OpenAPI schema at `https://wirenboard.cloud/api/v1/docs/swagger/`. The field mapping is still configurable in case the API changes.
+Бот опрашивает `GET /api/v1/controllers/`, смотрит поле `isAgentOk`, показывает текущий статус контроллеров и присылает уведомления, когда контроллер упал или снова поднялся.
 
-## Features
-
-- Polls Wirenboard.cloud API by HTTP.
-- Follows paginated `next` links from `/api/v1/controllers/`.
-- Detects `online -> offline` and `offline -> online` transitions.
-- Sends push notifications through [ntfy](https://ntfy.sh/) with a clickable remote-access link.
-- Runs a Telegram bot with approved users, status commands and inline buttons.
-- Stores previous state in a local JSON file.
-- Can run once from cron/systemd timer or continuously as a loop.
-- Uses Python standard library only.
-
-## Quick Start
-
-1. Copy config:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-2. Edit `.env`:
-
-```dotenv
-WB_API_URL=https://wirenboard.cloud/api/v1/controllers/?page_size=100
-WB_TOKEN=YOUR_TOKEN
-CONTROLLERS_PATH=results
-ID_FIELD=serialNumber
-NAME_FIELD=description
-ONLINE_FIELD=isAgentOk
-NTFY_TOPIC=your-private-topic
-```
-
-3. Run one check:
-
-```powershell
-python -m wb_cloud_watcher once
-```
-
-4. Run continuously:
-
-```powershell
-python -m wb_cloud_watcher loop
-```
-
-5. Or run the Telegram bot:
-
-```powershell
-python -m wb_cloud_watcher bot
-```
-
-## Configuration
-
-## Getting A Wirenboard.cloud Token
-
-The API login endpoint is `POST /api/v1/auth/token/`. It requires:
-
-- `email`
-- `password`
-- `totpCode`, if TOTP is enabled
-- or `recoveryCode`, if TOTP is unavailable
-
-Use the local helper so the password is entered with hidden input:
-
-```powershell
-python -m wb_cloud_watcher token --email you@example.com
-```
-
-If TOTP is enabled:
-
-```powershell
-python -m wb_cloud_watcher token --email you@example.com --totp-code 123456
-```
-
-Then put the printed access token into `.env`:
-
-```dotenv
-WB_TOKEN=...
-```
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `WB_API_URL` | `https://wirenboard.cloud/api/v1/controllers/?page_size=100` | Wirenboard.cloud endpoint returning paginated controllers. |
-| `WB_TOKEN` | empty | Wirenboard.cloud token. Sent as `Authorization: Token ...`. |
-| `WB_AUTH_HEADER` | empty | Optional raw HTTP auth header. Overrides `WB_TOKEN` style when set. |
-| `WB_TIMEOUT_SECONDS` | `15` | HTTP timeout. |
-| `CONTROLLERS_PATH` | `results` | Dot path to controllers list in the paginated JSON. |
-| `ID_FIELD` | `serialNumber` | Controller unique id field. |
-| `NAME_FIELD` | `description` | Human-readable controller name field. Falls back to serial number when empty. |
-| `ONLINE_FIELD` | `isAgentOk` | Boolean controller agent health field. |
-| `LAST_SEEN_FIELD` | `lastAgentPingAt` | Last successful agent ping timestamp. Used only in notification text. |
-| `STATE_FILE` | `.state/controllers.json` | Local state file. |
-| `POLL_INTERVAL_SECONDS` | `60` | Loop polling interval. |
-| `NOTIFY_ON_FIRST_RUN` | `false` | Send notifications for already-offline controllers on first run. |
-| `NTFY_SERVER` | `https://ntfy.sh` | ntfy server URL. |
-| `NTFY_TOPIC` | required for notifications | ntfy topic name. |
-| `NTFY_TOKEN` | empty | Optional ntfy bearer token. |
-| `NTFY_PRIORITY` | `default` | ntfy priority, for example `high`. |
-| `TELEGRAM_BOT_TOKEN` | empty | Telegram bot token from BotFather. |
-| `TELEGRAM_ALLOWED_USER_IDS` | empty | Comma-separated approved Telegram user IDs. |
-| `TELEGRAM_TIMEOUT_SECONDS` | `30` | Telegram HTTP timeout. |
-
-## Telegram Bot
-
-The bot supports multiple approved users. Access is checked by Telegram user id, not by username.
-
-Commands:
+Репозиторий:
 
 ```text
-/start
-/status
-/status SERIAL
-/id
+https://github.com/IG-SSP/SmartSpaceAlarmBot
 ```
 
-The `/status` response includes a summary, controller statuses, serial numbers, last ping timestamps and inline buttons. Controller details include an `Open remote access` button for:
+## Что умеет
+
+- Проверяет контроллеры Wirenboard.cloud через API.
+- Показывает статус всех объектов.
+- Показывает статус конкретного контроллера по serial number или части friendly name.
+- Использует `description` как понятное имя объекта.
+- Добавляет кнопку удаленного доступа:
 
 ```text
 https://wirenboard.cloud/connect/http/<serialNumber>/
 ```
 
-Setup:
+- Поддерживает approved users.
+- Поддерживает admins.
+- Позволяет админам добавлять и удалять пользователей прямо из бота.
+- Позволяет админам скачать backup-архив через бота.
+- Хранит состояние и список пользователей локально в `.state`.
+- Работает без внешних Python-зависимостей.
 
-1. Create a bot through `@BotFather` and put the token into `.env`:
+## Быстрый деплой
 
-```dotenv
-TELEGRAM_BOT_TOKEN=123456:...
-```
-
-2. Start the bot temporarily:
-
-```bash
-python -m wb_cloud_watcher bot
-```
-
-3. Send `/id` to the bot. If you are not approved yet, it will still reply with your Telegram user id.
-
-4. Add approved users to `.env`:
-
-```dotenv
-TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
-```
-
-5. Restart the bot.
-
-The bot also performs background checks using `POLL_INTERVAL_SECONDS` and sends state-change notifications to all approved private chats.
-
-## JSON Path Example
-
-The documented controller list response is paginated:
-
-```json
-{
-  "count": 1,
-  "next": null,
-  "previous": null,
-  "results": [
-    {
-      "serialNumber": "XXXXXXXX",
-      "description": "Boiler room",
-      "isAgentOk": true,
-      "lastAgentPingAt": "2026-06-10T12:00:00Z"
-    }
-  ]
-}
-```
-
-The monitor treats `isAgentOk=false` as a fallen controller.
-
-Notification body example:
-
-```text
-Boiler room
-Status: OFFLINE
-Changed: online -> offline
-Serial: ABC123
-Last ping: 2026-06-10T12:00:00Z
-Remote access: https://wirenboard.cloud/connect/http/ABC123/
-```
-
-For ntfy, the same URL is also sent in the `Click` header, so tapping the push opens the controller web access page.
-
-## Deployment Notes
-
-For a pet project, the simplest reliable setup is systemd on the server.
-
-Detailed deployment instructions are in `DEPLOY.md`.
-For a guided server setup, run:
+На чистом Ubuntu/Debian VPS:
 
 ```bash
+sudo apt update
+sudo apt install -y python3 git
+sudo git clone https://github.com/IG-SSP/SmartSpaceAlarmBot.git /opt/wb-cloud-watcher
+cd /opt/wb-cloud-watcher
 sudo python3 install.py
 ```
 
-Do not send the Wirenboard.cloud password in chat. Log in on the server over SSH and run the token helper interactively:
+Установщик можно запускать повторно. Он не должен ломаться, если уже существуют:
 
-```bash
-python3 -m wb_cloud_watcher token --email ig@gilpert.ru
+- `/opt/wb-cloud-watcher`
+- пользователь `wbwatcher`
+- `.env`
+- systemd service
+- backup-директория
+
+Подробности: [DEPLOY.md](DEPLOY.md).
+
+## Конфиг
+
+Основной конфиг лежит тут:
+
+```text
+/opt/wb-cloud-watcher/.env
 ```
 
-The password is entered through hidden terminal input. Put only the printed access token into `.env`.
+Минимально важные переменные:
 
-Recommended `.env` permissions on the server:
-
-```bash
-chmod 600 .env
+```dotenv
+WB_TOKEN=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ADMIN_USER_IDS=111111111
+TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
+TELEGRAM_USERS_FILE=.state/telegram_users.json
+BACKUP_DIR=.backups
+POLL_INTERVAL_SECONDS=60
 ```
 
-A systemd template is provided at `deploy/wb-cloud-watcher-bot.service`. Adjust `WorkingDirectory`, `EnvironmentFile`, `ExecStart`, `User` and `Group` for your server, then install it as:
+`WB_TOKEN` и `TELEGRAM_BOT_TOKEN` нельзя коммитить в GitHub.
+
+## Получение WB_TOKEN
+
+Пароль от Wirenboard.cloud не нужно писать в чат и не нужно хранить в `.env`.
+
+Получить токен можно интерактивно:
 
 ```bash
-sudo cp deploy/wb-cloud-watcher-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now wb-cloud-watcher-bot
+cd /opt/wb-cloud-watcher
+sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru
+```
+
+Если включен TOTP:
+
+```bash
+sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru --totp-code 123456
+```
+
+Команда напечатает:
+
+```dotenv
+WB_TOKEN=...
+```
+
+## Команды бота
+
+Для всех approved users:
+
+```text
+/start
+/help
+/id
+/status
+/status SERIAL
+```
+
+Только для admins:
+
+```text
+/users
+/adduser 123456789
+/deluser 123456789
+/backup
+```
+
+Админов нельзя удалить через `/deluser`. Чтобы изменить список админов, нужно поменять `TELEGRAM_ADMIN_USER_IDS` в `.env` и перезапустить сервис.
+
+## Как узнать Telegram user id
+
+Если пользователь еще не разрешен, он все равно может написать боту:
+
+```text
+/id
+```
+
+Бот ответит:
+
+```text
+Access denied.
+Your Telegram user id: 111111111
+```
+
+После этого админ может добавить его:
+
+```text
+/adduser 111111111
+```
+
+## Backup
+
+Email backup больше не используется.
+
+Админ может скачать свежий backup прямо из Telegram:
+
+```text
+/backup
+```
+
+Архив содержит:
+
+- код проекта;
+- `.env`;
+- systemd service;
+- инструкции.
+
+Архив содержит токены, поэтому его нельзя пересылать в чужие чаты.
+
+Локально backup сохраняется в:
+
+```text
+/opt/wb-cloud-watcher/.backups
+```
+
+## Service
+
+Статус:
+
+```bash
 sudo systemctl status wb-cloud-watcher-bot
 ```
 
-If this will monitor real equipment, keep the polling interval conservative. Avoid aggressive polling of cloud APIs unless their limits are known.
+Логи:
+
+```bash
+sudo journalctl -u wb-cloud-watcher-bot -f
+```
+
+Перезапуск:
+
+```bash
+sudo systemctl restart wb-cloud-watcher-bot
+```
+
+## Проверка
+
+Локально:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Вручную проверить доступ к Wirenboard.cloud:
+
+```bash
+cd /opt/wb-cloud-watcher
+sudo -u wbwatcher python3 -m wb_cloud_watcher dump
+```

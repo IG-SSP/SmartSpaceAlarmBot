@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from install import add_tree, format_env
+from install import add_tree, copy_project, format_env
 
 
 class InstallTests(unittest.TestCase):
@@ -30,6 +30,16 @@ class InstallTests(unittest.TestCase):
         self.assertIn("wb-cloud-watcher/.env", names)
         self.assertNotIn("wb-cloud-watcher/.state/controllers.json", names)
         self.assertNotIn("wb-cloud-watcher/__pycache__/x.pyc", names)
+
+    def test_copy_project_is_noop_when_source_and_target_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "marker.txt"
+            marker.write_text("keep", encoding="utf-8")
+
+            copy_project(root, root)
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
 
 if __name__ == "__main__":

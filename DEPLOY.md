@@ -1,22 +1,21 @@
-# Deployment Guide
+# Деплой SmartSpaceAlarmBot
 
-This guide is for deploying SmartSpaceAlarmBot on a clean Ubuntu/Debian VPS.
+Инструкция для чистого Ubuntu/Debian VPS.
 
-Repository:
+Репозиторий:
 
 ```text
 https://github.com/IG-SSP/SmartSpaceAlarmBot
 ```
 
-The bot uses Telegram long polling, so the server does not need any inbound public web port. It only needs outbound HTTPS access to:
+Бот работает через Telegram long polling. Открывать входящий HTTP-порт на сервере не нужно.
+
+Серверу нужен только исходящий HTTPS-доступ к:
 
 - `wirenboard.cloud`
 - `api.telegram.org`
-- your SMTP server, if email backup is enabled
 
-## Quick Install
-
-Run on the server over SSH:
+## Быстрая установка
 
 ```bash
 sudo apt update
@@ -26,177 +25,235 @@ cd /opt/wb-cloud-watcher
 sudo python3 install.py
 ```
 
-The installer will ask for:
+Установщик спросит:
 
-- Wirenboard.cloud email, default: `ig@gilpert.ru`
-- existing Wirenboard.cloud access token, or password for interactive token login
-- TOTP code or recovery code, if enabled
-- Telegram bot token from `@BotFather`
-- allowed Telegram user IDs
-- polling interval
-- whether to send first-run offline alerts
-- SMTP settings for backup email
+- директорию установки, по умолчанию `/opt/wb-cloud-watcher`;
+- системного пользователя, по умолчанию `wbwatcher`;
+- имя systemd service, по умолчанию `wb-cloud-watcher-bot`;
+- email Wirenboard.cloud, по умолчанию `ig@gilpert.ru`;
+- существующий `WB_TOKEN` или пароль для получения токена;
+- TOTP/recovery code, если нужен;
+- Telegram bot token от `@BotFather`;
+- Telegram user IDs админов;
+- Telegram user IDs разрешенных пользователей;
+- интервал проверки;
+- отправлять ли уведомления об уже упавших контроллерах при первом запуске.
 
-The Wirenboard.cloud password is not written to `.env`. It is used once to request an access token.
+SMTP больше не нужен. Backup скачивается через Telegram-команду `/backup`.
 
-## Where Config Lives
+## Повторный запуск установщика
 
-Runtime config is stored here:
+`install.py` можно запускать несколько раз.
+
+Повторный запуск:
+
+- не падает, если пользователь `wbwatcher` уже существует;
+- не требует удалять `/opt/wb-cloud-watcher`;
+- перезаписывает `.env` новыми ответами;
+- обновляет systemd service;
+- делает новый локальный backup;
+- повторно запускает/перезапускает service через systemd.
+
+Повторный запуск полезен, если нужно заменить:
+
+- `WB_TOKEN`;
+- `TELEGRAM_BOT_TOKEN`;
+- список админов;
+- интервал проверки;
+- systemd service.
+
+## Где лежит конфиг
 
 ```text
 /opt/wb-cloud-watcher/.env
 ```
 
-Important values:
+Основные переменные:
 
 ```dotenv
+WB_API_URL=https://wirenboard.cloud/api/v1/controllers/?page_size=100
 WB_TOKEN=...
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
+
+CONTROLLERS_PATH=results
+ID_FIELD=serialNumber
+NAME_FIELD=description
+ONLINE_FIELD=isAgentOk
+LAST_SEEN_FIELD=lastAgentPingAt
+
+STATE_FILE=.state/controllers.json
 POLL_INTERVAL_SECONDS=60
+NOTIFY_ON_FIRST_RUN=false
+WB_TIMEOUT_SECONDS=15
+
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ADMIN_USER_IDS=111111111
+TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
+TELEGRAM_USERS_FILE=.state/telegram_users.json
+TELEGRAM_TIMEOUT_SECONDS=30
+
+BACKUP_DIR=.backups
 ```
 
-The installer sets secure permissions:
+Права на `.env`:
 
 ```bash
-sudo chmod 600 /opt/wb-cloud-watcher/.env
 sudo chown wbwatcher:wbwatcher /opt/wb-cloud-watcher/.env
+sudo chmod 600 /opt/wb-cloud-watcher/.env
 ```
 
-## Telegram Bot Token
+## Telegram bot token
 
-Create a bot:
-
-1. Open `@BotFather` in Telegram.
-2. Send `/newbot`.
-3. Choose name and username.
-4. Copy the token.
-
-Use that token when the installer asks:
-
-```text
-Telegram bot token from @BotFather:
-```
-
-Or edit manually:
+1. Открыть `@BotFather`.
+2. Выполнить `/newbot`.
+3. Задать имя и username.
+4. Скопировать token.
+5. Вставить token в установщик или в `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=123456789:AA...
 ```
 
-Do not commit this token.
+## Админы и пользователи
 
-## Approved Telegram Users
+Админы задаются в `.env`:
 
-Access is controlled by numeric Telegram user IDs:
+```dotenv
+TELEGRAM_ADMIN_USER_IDS=111111111
+```
+
+Approved users задаются стартовым списком:
 
 ```dotenv
 TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
 ```
 
-To find your ID:
+После первого запуска бот создает файл:
 
-1. Set a temporary placeholder during install, for example `0`.
-2. Start the service.
-3. Send `/id` to the bot.
-4. The bot replies even to unauthorized users:
+```text
+/opt/wb-cloud-watcher/.state/telegram_users.json
+```
+
+Дальше список пользователей можно менять командами в Telegram.
+
+Команды админа:
+
+```text
+/users
+/adduser 123456789
+/deluser 123456789
+/backup
+```
+
+Админы всегда имеют доступ. `/deluser` не удаляет админов; чтобы поменять админов, нужно отредактировать `TELEGRAM_ADMIN_USER_IDS` в `.env` и перезапустить service.
+
+## Как узнать Telegram user id
+
+Можно временно указать:
+
+```dotenv
+TELEGRAM_ADMIN_USER_IDS=0
+TELEGRAM_ALLOWED_USER_IDS=0
+```
+
+Запустить бота и написать:
+
+```text
+/id
+```
+
+Бот ответит даже неразрешенному пользователю:
 
 ```text
 Access denied.
 Your Telegram user id: 111111111
 ```
 
-Then update `.env`:
+После этого поменять `.env`:
 
 ```bash
 sudo nano /opt/wb-cloud-watcher/.env
 sudo systemctl restart wb-cloud-watcher-bot
 ```
 
-## Wirenboard.cloud Token
+## WB_TOKEN
 
-Preferred: let the installer get it.
+Лучше дать установщику получить токен интерактивно.
 
-Manual token request:
+Вручную:
 
 ```bash
 cd /opt/wb-cloud-watcher
 sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru
 ```
 
-If TOTP is enabled:
+Если включен TOTP:
 
 ```bash
 sudo -u wbwatcher python3 -m wb_cloud_watcher token --email ig@gilpert.ru --totp-code 123456
 ```
 
-Put the printed value into `.env`:
+Пароль вводится скрыто. В `.env` сохраняется только токен:
 
 ```dotenv
 WB_TOKEN=...
 ```
 
-## Backup Email
+## Backup через бота
 
-At the end of install, the installer can send a backup archive by email.
+Email backup отключен.
 
-The archive contains:
+Админ пишет боту:
 
-- project code
-- `.env`
-- systemd service file
-- restore instructions
+```text
+/backup
+```
 
-Important: the archive contains access tokens. Send it only to a mailbox you control.
+Бот создает свежий архив и отправляет его как файл.
 
-SMTP values requested by the installer:
+Локальная директория backup:
 
-- recipient email
-- SMTP host
-- SMTP port, usually `587`
-- STARTTLS yes/no
-- SMTP username
-- SMTP password or app password
-- From address
+```text
+/opt/wb-cloud-watcher/.backups
+```
 
-Restore instructions are in `RESTORE.md`.
+Архив содержит `.env` с токенами. Его нельзя пересылать посторонним.
 
-## Service Commands
+## Systemd
 
-Check service:
+Проверить статус:
 
 ```bash
 sudo systemctl status wb-cloud-watcher-bot
 ```
 
-View logs:
+Логи:
 
 ```bash
 sudo journalctl -u wb-cloud-watcher-bot -f
 ```
 
-Restart:
+Перезапуск:
 
 ```bash
 sudo systemctl restart wb-cloud-watcher-bot
 ```
 
-Stop:
+Остановка:
 
 ```bash
 sudo systemctl stop wb-cloud-watcher-bot
 ```
 
-## Manual Test
+## Ручная проверка
 
-Check Wirenboard.cloud access:
+Проверить Wirenboard.cloud:
 
 ```bash
 cd /opt/wb-cloud-watcher
 sudo -u wbwatcher python3 -m wb_cloud_watcher dump
 ```
 
-Run bot in foreground:
+Запустить бота в foreground:
 
 ```bash
 sudo systemctl stop wb-cloud-watcher-bot
@@ -204,24 +261,26 @@ cd /opt/wb-cloud-watcher
 sudo -u wbwatcher python3 -m wb_cloud_watcher bot
 ```
 
-In Telegram:
+В Telegram:
 
 ```text
 /start
 /status
 /status SERIAL
 /id
+/users
+/backup
 ```
 
-Stop foreground mode with `Ctrl+C`, then start service again:
+Остановить foreground: `Ctrl+C`.
+
+Вернуть service:
 
 ```bash
 sudo systemctl start wb-cloud-watcher-bot
 ```
 
-## Update Deployment
-
-Pull new code:
+## Обновление
 
 ```bash
 cd /opt/wb-cloud-watcher
@@ -231,11 +290,12 @@ sudo chmod 600 /opt/wb-cloud-watcher/.env
 sudo systemctl restart wb-cloud-watcher-bot
 ```
 
-## Security Notes
+## Безопасность
 
-- Store `WB_TOKEN` and `TELEGRAM_BOT_TOKEN` only in `.env`.
-- Keep `.env` permissions at `600`.
-- Do not store the Wirenboard.cloud password on the server.
-- Do not send the Wirenboard.cloud password in chat.
-- Do not expose a public HTTP port for this bot; it uses Telegram long polling.
-- Keep the email backup private because it contains `.env`.
+- Не хранить пароль Wirenboard.cloud в `.env`.
+- Не отправлять пароль Wirenboard.cloud в чат.
+- Не коммитить `.env`.
+- Держать права `.env` как `600`.
+- Backup содержит токены.
+- Доступ к `/backup`, `/adduser`, `/deluser`, `/users` есть только у админов.
+- Входящие порты для бота открывать не нужно.
