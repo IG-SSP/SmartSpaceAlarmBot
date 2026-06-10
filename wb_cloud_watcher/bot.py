@@ -19,13 +19,20 @@ from .cli import (
     controller_to_state,
     env,
     fetch_controllers,
-    find_changes,
+    fetch_controller_payloads,
     load_state,
+    local_access_url,
+    patch_json_authenticated,
+    preferred_access_url,
     remote_access_url,
     save_state,
 )
 
 CONTROLLERS_PAGE_SIZE = 12
+DEFAULT_THEME = "dark"
+DEFAULT_OFFLINE_DELAY_SECONDS = 0
+THEMES = {"light", "dark", "matrix"}
+START_ANIMATION_PATH = Path("assets/start.gif")
 
 
 @dataclass(frozen=True)
@@ -79,8 +86,21 @@ def run_bot(wb_config: Config, tg_config: TelegramConfig) -> int:
     from .webapp import read_webapp_config, start_webapp_server
 
     webapp_config = read_webapp_config()
-    start_webapp_server(wb_config, tg_config, webapp_config, lambda user_id: is_allowed(tg_config, user_id))
+    start_webapp_server(
+        wb_config,
+        tg_config,
+        webapp_config,
+        lambda user_id: is_allowed(tg_config, user_id),
+        lambda user_id: get_user_preferences(tg_config, user_id),
+        lambda user_id, values: update_user_preferences(tg_config, user_id, sanitize_preferences(values)),
+    )
     configure_webapp_menu(tg_config)
+    try:
+        result = ensure_ip_notes(wb_config)
+        if result["created"]:
+            print(f"created IP notes for {result['created']} controller(s)")
+    except Exception as exc:
+        print(f"IP note bootstrap failed: {exc}", file=sys.stderr)
 
     offset: int | None = None
     next_check_at = 0.0
@@ -115,33 +135,116 @@ def check_and_notify(wb_config: Config, tg_config: TelegramConfig, *, include_cu
         controllers = fetch_controllers(wb_config)
         previous = load_state(wb_config.state_file)
         first_run = not wb_config.state_file.exists()
-        changes = find_changes(
-            previous,
-            controllers,
-            first_run=first_run,
-            notify_on_first_run=wb_config.notify_on_first_run,
-        )
-        current = {controller.controller_id: controller_to_state(controller) for controller in controllers}
+        current = build_current_state(controllers, previous)
         save_state(wb_config.state_file, current)
     except Exception as exc:
         print(f"background check failed: {exc}", file=sys.stderr)
         return
 
-    if include_current_offline and wb_config.notify_on_first_run:
-        known_changes = {controller.controller_id for controller, _ in changes}
-        changes.extend((controller, None) for controller in controllers if not controller.online and controller.controller_id not in known_changes)
+    notification_state = load_notification_state(tg_config)
+    now = int(time.time())
+    for user_id in get_allowed_user_ids(tg_config):
+        preferences = get_user_preferences(tg_config, user_id)
+        user_state = notification_state.setdefault(str(user_id), {})
+        for controller in controllers:
+            old = previous.get(controller.controller_id)
+            old_online = bool(old.get("online")) if old is not None else None
+            offline_since = current[controller.controller_id].get("offline_since")
+            notified = bool(user_state.get(controller.controller_id, {}).get("offline_notified"))
 
-    for controller, old_online in changes:
-        text = html_pre(format_telegram_notification_body(controller, old_online))
-        keyboard = inline_keyboard(
-            [
-                [url_button("Открыть веб-интерфейс", remote_access_url(controller.controller_id))],
-                [callback_button("Обновить объект", f"controller:{controller.controller_id}")],
-                [callback_button("Все объекты", "status:all:0")],
-            ]
-        )
-        for user_id in get_allowed_user_ids(tg_config):
-            safe_send_message(tg_config, user_id, text, keyboard)
+            should_notify_first_run = first_run and include_current_offline and wb_config.notify_on_first_run
+            if not controller.online:
+                if offline_since is None:
+                    continue
+                offline_seconds = max(0, now - int(offline_since))
+                if not notified and (old is not None or should_notify_first_run) and offline_seconds >= preferences["offline_delay_seconds"]:
+                    send_controller_notification(tg_config, user_id, controller, old_online, preferences, offline_seconds)
+                    user_state[controller.controller_id] = {"offline_notified": True, "offline_since": offline_since}
+                continue
+
+            if notified and old_online is False:
+                offline_seconds = 0
+                old_offline_since = user_state.get(controller.controller_id, {}).get("offline_since")
+                if isinstance(old_offline_since, int):
+                    offline_seconds = max(0, now - old_offline_since)
+                send_controller_notification(tg_config, user_id, controller, old_online, preferences, offline_seconds)
+                user_state.pop(controller.controller_id, None)
+
+        active_ids = {controller.controller_id for controller in controllers if not controller.online}
+        for controller_id in list(user_state):
+            if controller_id not in active_ids:
+                user_state.pop(controller_id, None)
+
+    save_notification_state(tg_config, notification_state)
+
+
+def build_current_state(controllers: list[Controller], previous: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    now = int(time.time())
+    current: dict[str, dict[str, Any]] = {}
+    for controller in controllers:
+        state = controller_to_state(controller)
+        old = previous.get(controller.controller_id, {})
+        if controller.online:
+            state["offline_since"] = None
+        elif old.get("online") is False and isinstance(old.get("offline_since"), int):
+            state["offline_since"] = old["offline_since"]
+        else:
+            state["offline_since"] = now
+        current[controller.controller_id] = state
+    return current
+
+
+def ensure_ip_notes(wb_config: Config) -> dict[str, int]:
+    raw_controllers = fetch_controller_payloads(wb_config)
+    result = {"checked": 0, "already_exists": 0, "created": 0}
+    for raw in raw_controllers:
+        if not isinstance(raw, dict):
+            continue
+        serial_number = str(raw.get("serialNumber") or "")
+        if not serial_number:
+            continue
+        result["checked"] += 1
+        notes = raw.get("userDefinedData")
+        if not isinstance(notes, list):
+            notes = []
+        if has_ip_note(notes):
+            result["already_exists"] += 1
+            continue
+        updated_notes = [note for note in notes if isinstance(note, dict)]
+        updated_notes.append({"label": "IP", "value": "CHANGE_ME"})
+        url = f"https://wirenboard.cloud/api/v1/controllers/{quote(serial_number, safe='')}/"
+        patch_json_authenticated(wb_config, url, {"userDefinedData": updated_notes})
+        result["created"] += 1
+    return result
+
+
+def has_ip_note(notes: list[Any]) -> bool:
+    for note in notes:
+        if not isinstance(note, dict):
+            continue
+        if str(note.get("label") or "").strip().casefold() == "ip":
+            return True
+    return False
+
+
+def send_ip_note_report(wb_config: Config, tg_config: TelegramConfig, chat_id: int) -> None:
+    try:
+        result = ensure_ip_notes(wb_config)
+    except Exception as exc:
+        send_message(tg_config, chat_id, f"Не удалось проверить заметки IP:\n<code>{html.escape(str(exc))}</code>", admin_keyboard())
+        return
+    text = "\n".join(
+        [
+            "<b>Заметки IP</b>",
+            "",
+            f"Проверено объектов: <b>{result['checked']}</b>",
+            f"Уже были заметки: <b>{result['already_exists']}</b>",
+            f"Создано заметок: <b>{result['created']}</b>",
+            "",
+            "Если создана заметка <code>IP=CHANGE_ME</code>, откройте объект в WB Cloud и замените значение на локальный адрес, например <code>192.168.1.1/16</code>.",
+        ]
+    )
+    send_message(tg_config, chat_id, text, admin_keyboard())
 
 
 def handle_update(wb_config: Config, tg_config: TelegramConfig, update: dict[str, Any]) -> None:
@@ -175,11 +278,15 @@ def handle_update(wb_config: Config, tg_config: TelegramConfig, update: dict[str
         require_admin_or_reply(tg_config, chat_id, user_id, lambda: remove_user_command(tg_config, chat_id, text))
     elif text.startswith("/backup"):
         require_admin_or_reply(tg_config, chat_id, user_id, lambda: send_backup(tg_config, chat_id))
+    elif text.startswith("/settings") or text.startswith("/prefs"):
+        send_settings(tg_config, chat_id, user_id)
     elif text.startswith("/status"):
         parts = text.split(maxsplit=1)
         serial_or_name = parts[1].strip() if len(parts) > 1 else None
         send_status(wb_config, tg_config, chat_id, serial_or_name)
-    elif text.startswith("/start") or text.startswith("/help"):
+    elif text.startswith("/start"):
+        send_start(tg_config, chat_id)
+    elif text.startswith("/help"):
         send_message(tg_config, chat_id, help_text(), main_menu_keyboard(tg_config.webapp_public_url))
     else:
         send_message(tg_config, chat_id, help_text(), main_menu_keyboard(tg_config.webapp_public_url))
@@ -217,6 +324,16 @@ def handle_callback(wb_config: Config, tg_config: TelegramConfig, callback: dict
         edit_message(tg_config, chat_id, message_id, format_users(tg_config), admin_keyboard())
     elif data == "admin:backup" and is_admin(tg_config, user_id):
         send_backup(tg_config, chat_id)
+    elif data == "admin:ipnotes" and is_admin(tg_config, user_id):
+        send_ip_note_report(wb_config, tg_config, chat_id)
+    elif data == "settings":
+        edit_message(tg_config, chat_id, message_id, format_settings(tg_config, user_id), settings_keyboard(tg_config, user_id))
+    elif data.startswith("theme:"):
+        set_user_theme(tg_config, user_id, data.split(":", 1)[1])
+        edit_message(tg_config, chat_id, message_id, format_settings(tg_config, user_id), settings_keyboard(tg_config, user_id))
+    elif data.startswith("delay:"):
+        set_user_offline_delay(tg_config, user_id, parse_delay_value(data))
+        edit_message(tg_config, chat_id, message_id, format_settings(tg_config, user_id), settings_keyboard(tg_config, user_id))
     elif data.startswith("controller:"):
         serial_number = data.split(":", 1)[1]
         edit_controller(wb_config, tg_config, chat_id, message_id, serial_number)
@@ -332,7 +449,11 @@ def format_controller_detail(controller: Controller) -> str:
     ]
     if controller.last_seen:
         lines.append(f"Последний пинг: {html.escape(controller.last_seen)}")
-    lines.append(f"Веб-интерфейс: {html.escape(remote_access_url(controller.controller_id))}")
+    local_url = local_access_url(controller)
+    if not controller.online and local_url:
+        lines.append("Локальный доступ: перед открытием включите VPN до объекта.")
+        lines.append(f"Локальный веб-интерфейс: {html.escape(local_url)}")
+    lines.append(f"Удаленный доступ: {html.escape(remote_access_url(controller.controller_id))}")
     return "\n".join(lines)
 
 
@@ -348,7 +469,11 @@ def format_telegram_notification_body(controller: Controller, old_online: bool |
     ]
     if controller.last_seen:
         lines.append(f"Последний пинг: {controller.last_seen}")
-    lines.append(f"Веб-интерфейс: {remote_access_url(controller.controller_id)}")
+    local_url = local_access_url(controller)
+    if not controller.online and local_url:
+        lines.append("Перед локальным переходом включите VPN до объекта.")
+        lines.append(f"Локальный доступ: {local_url}")
+    lines.append(f"Удаленный доступ: {remote_access_url(controller.controller_id)}")
     return "\n".join(lines)
 
 
@@ -368,8 +493,11 @@ def help_text() -> str:
         [
             "<b>SmartSpaceAlarmBot</b>",
             "",
+            "Основное управление теперь внутри Mini App.",
+            "",
             "/status - все объекты",
             "/status SERIAL - один объект",
+            "/settings - ваши уведомления",
             "/id - показать ваш Telegram ID",
             "/users - пользователи (админ)",
             "/adduser ID - разрешить пользователя (админ)",
@@ -377,6 +505,37 @@ def help_text() -> str:
             "/backup - скачать резервную копию (админ)",
         ]
     )
+
+
+def start_text() -> str:
+    return "\n".join(
+        [
+            "<b>SmartSpaceAlarmBot</b>",
+            "",
+            "Все управление, статусы, поиск, темы и быстрый доступ к объектам находятся внутри приложения.",
+            "",
+            "Этот чат остается для важных уведомлений: когда контроллер пропал, вернулся в сеть или требует внимания.",
+        ]
+    )
+
+
+def send_start(tg_config: TelegramConfig, chat_id: int) -> None:
+    keyboard = start_keyboard(tg_config.webapp_public_url)
+    if START_ANIMATION_PATH.exists():
+        try:
+            send_animation(tg_config, chat_id, START_ANIMATION_PATH, start_text(), keyboard)
+            return
+        except Exception as exc:
+            print(f"sendAnimation failed: {exc}", file=sys.stderr)
+    send_message(tg_config, chat_id, start_text(), keyboard)
+
+
+def start_keyboard(webapp_public_url: str = "") -> dict[str, Any]:
+    rows = []
+    if webapp_public_url:
+        rows.append([web_app_button("Открыть приложение", webapp_public_url)])
+    rows.append([callback_button("Настройки уведомлений", "settings")])
+    return inline_keyboard(rows)
 
 
 def main_menu_keyboard(webapp_public_url: str = "") -> dict[str, Any]:
@@ -387,6 +546,7 @@ def main_menu_keyboard(webapp_public_url: str = "") -> dict[str, Any]:
         [
             [callback_button("Все объекты", "status:all:0")],
             [callback_button("Только упавшие", "status:offline:0")],
+            [callback_button("Настройки", "settings")],
             [callback_button("Пользователи", "admin:users"), callback_button("Резервная копия", "admin:backup")],
         ]
     )
@@ -420,13 +580,20 @@ def controllers_keyboard(controllers: list[Controller], *, page: int = 0, mode: 
 
 
 def controller_keyboard(controller: Controller) -> dict[str, Any]:
-    return inline_keyboard(
+    rows = []
+    local_url = local_access_url(controller)
+    if not controller.online and local_url:
+        rows.append([url_button("Локальный веб-интерфейс", local_url), url_button("Пинг локального", local_url)])
+        rows.append([url_button("Удаленный доступ", remote_access_url(controller.controller_id))])
+    else:
+        rows.append([url_button("Открыть веб-интерфейс", remote_access_url(controller.controller_id))])
+    rows.extend(
         [
-            [url_button("Открыть веб-интерфейс", remote_access_url(controller.controller_id))],
             [callback_button("Обновить", f"controller:{controller.controller_id}")],
             [callback_button("Все объекты", "status:all:0")],
         ]
     )
+    return inline_keyboard(rows)
 
 
 def parse_page(callback_data: str) -> int:
@@ -443,7 +610,7 @@ def clamp_page(page: int, page_count: int) -> int:
     return max(0, min(page, page_count - 1))
 
 
-def inline_keyboard(rows: list[list[dict[str, str]]]) -> dict[str, Any]:
+def inline_keyboard(rows: list[list[dict[str, Any]]]) -> dict[str, Any]:
     return {"inline_keyboard": rows}
 
 
@@ -482,6 +649,112 @@ def html_pre(value: str) -> str:
     return f"<pre>{html.escape(value)}</pre>"
 
 
+def send_controller_notification(
+    tg_config: TelegramConfig,
+    user_id: int,
+    controller: Controller,
+    old_online: bool | None,
+    preferences: dict[str, Any],
+    offline_seconds: int,
+) -> None:
+    theme = normalize_theme(str(preferences.get("theme") or DEFAULT_THEME))
+    text = format_themed_notification(controller, old_online, offline_seconds, theme)
+    keyboard = notification_keyboard(controller)
+    safe_send_message(tg_config, user_id, text, keyboard)
+
+
+def notification_keyboard(controller: Controller) -> dict[str, Any]:
+    rows = []
+    local_url = local_access_url(controller)
+    if not controller.online and local_url:
+        rows.append([url_button("Локальный веб-интерфейс", local_url), url_button("Пинг локального", local_url)])
+        rows.append([url_button("Удаленный доступ", remote_access_url(controller.controller_id))])
+    else:
+        rows.append([url_button("Открыть веб-интерфейс", preferred_access_url(controller))])
+    rows.extend(
+        [
+            [callback_button("Обновить объект", f"controller:{controller.controller_id}")],
+            [callback_button("Все объекты", "status:all:0")],
+        ]
+    )
+    return inline_keyboard(rows)
+
+
+def format_themed_notification(controller: Controller, old_online: bool | None, offline_seconds: int, theme: str) -> str:
+    if theme == "matrix":
+        return html_pre(format_matrix_notification(controller, old_online, offline_seconds))
+    if theme == "light":
+        return format_light_notification(controller, old_online, offline_seconds)
+    return format_dark_notification(controller, old_online, offline_seconds)
+
+
+def format_light_notification(controller: Controller, old_online: bool | None, offline_seconds: int) -> str:
+    icon = "✅" if controller.online else "⚠️"
+    status = "в сети" if controller.online else "не в сети"
+    lines = [
+        f"{icon} <b>{html.escape(controller.name)}</b>",
+        f"Статус: <b>{status}</b>",
+        f"Serial: <code>{html.escape(controller.controller_id)}</code>",
+    ]
+    if offline_seconds and not controller.online:
+        lines.append(f"Оффлайн: <b>{format_duration(offline_seconds)}</b>")
+    append_access_lines(lines, controller)
+    return "\n".join(lines)
+
+
+def format_dark_notification(controller: Controller, old_online: bool | None, offline_seconds: int) -> str:
+    status = "ONLINE" if controller.online else "OFFLINE"
+    lines = [
+        f"<b>{html.escape(controller.name)}</b>",
+        f"Статус: <b>{status}</b>",
+        f"Serial: <code>{html.escape(controller.controller_id)}</code>",
+    ]
+    if controller.last_seen:
+        lines.append(f"Последний пинг: <code>{html.escape(controller.last_seen)}</code>")
+    if offline_seconds and not controller.online:
+        lines.append(f"Оффлайн: <b>{format_duration(offline_seconds)}</b>")
+    append_access_lines(lines, controller)
+    return "\n".join(lines)
+
+
+def format_matrix_notification(controller: Controller, old_online: bool | None, offline_seconds: int) -> str:
+    status = "ONLINE" if controller.online else "OFFLINE"
+    lines = [
+        "SMARTSPACE::WATCHER",
+        f"OBJECT={controller.name}",
+        f"STATUS={status}",
+        f"SERIAL={controller.controller_id}",
+    ]
+    if controller.last_seen:
+        lines.append(f"LAST_PING={controller.last_seen}")
+    if offline_seconds and not controller.online:
+        lines.append(f"OFFLINE_FOR={format_duration(offline_seconds)}")
+    local_url = local_access_url(controller)
+    if not controller.online and local_url:
+        lines.append("VPN_REQUIRED=TRUE")
+        lines.append(f"LOCAL={local_url}")
+    lines.append(f"REMOTE={remote_access_url(controller.controller_id)}")
+    return "\n".join(lines)
+
+
+def append_access_lines(lines: list[str], controller: Controller) -> None:
+    local_url = local_access_url(controller)
+    if not controller.online and local_url:
+        lines.append("Перед локальным переходом включите VPN до объекта.")
+        lines.append(f"Локальный доступ: {html.escape(local_url)}")
+    lines.append(f"Удаленный доступ: {html.escape(remote_access_url(controller.controller_id))}")
+
+
+def format_duration(seconds: int) -> str:
+    minutes = seconds // 60
+    if minutes < 1:
+        return f"{seconds} сек."
+    hours, rest_minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours} ч {rest_minutes} мин"
+    return f"{minutes} мин"
+
+
 def is_allowed(tg_config: TelegramConfig, user_id: int) -> bool:
     return user_id in get_allowed_user_ids(tg_config) or user_id in get_admin_user_ids(tg_config)
 
@@ -514,9 +787,16 @@ def load_user_access(tg_config: TelegramConfig) -> dict[str, set[int]]:
 
 def save_user_access(tg_config: TelegramConfig, access: dict[str, set[int]]) -> None:
     tg_config.users_file.parent.mkdir(parents=True, exist_ok=True)
+    old_payload = {}
+    if tg_config.users_file.exists():
+        try:
+            old_payload = json.loads(tg_config.users_file.read_text(encoding="utf-8"))
+        except Exception:
+            old_payload = {}
     payload = {
         "allowed": sorted(access.get("allowed", set()) | access.get("admins", set())),
         "admins": sorted(access.get("admins", set())),
+        "preferences": old_payload.get("preferences", {}),
     }
     tg_config.users_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     try:
@@ -531,6 +811,150 @@ def get_allowed_user_ids(tg_config: TelegramConfig) -> set[int]:
 
 def get_admin_user_ids(tg_config: TelegramConfig) -> set[int]:
     return load_user_access(tg_config)["admins"]
+
+
+def send_settings(tg_config: TelegramConfig, chat_id: int, user_id: int) -> None:
+    send_message(tg_config, chat_id, format_settings(tg_config, user_id), settings_keyboard(tg_config, user_id))
+
+
+def format_settings(tg_config: TelegramConfig, user_id: int) -> str:
+    preferences = get_user_preferences(tg_config, user_id)
+    theme_names = {"light": "светлая", "dark": "темная", "matrix": "матрица"}
+    return "\n".join(
+        [
+            "<b>Ваши настройки</b>",
+            "",
+            f"Тема уведомлений: <b>{theme_names[preferences['theme']]}</b>",
+            f"Задержка offline-уведомления: <b>{format_duration(preferences['offline_delay_seconds'])}</b>",
+        ]
+    )
+
+
+def settings_keyboard(tg_config: TelegramConfig, user_id: int) -> dict[str, Any]:
+    preferences = get_user_preferences(tg_config, user_id)
+    theme = preferences["theme"]
+    delay = preferences["offline_delay_seconds"]
+    return inline_keyboard(
+        [
+            [
+                callback_button(("✓ " if theme == "dark" else "") + "Темная", "theme:dark"),
+                callback_button(("✓ " if theme == "light" else "") + "Светлая", "theme:light"),
+                callback_button(("✓ " if theme == "matrix" else "") + "Матрица", "theme:matrix"),
+            ],
+            [
+                callback_button(("✓ " if delay == 0 else "") + "Сразу", "delay:0"),
+                callback_button(("✓ " if delay == 300 else "") + "5 мин", "delay:300"),
+                callback_button(("✓ " if delay == 900 else "") + "15 мин", "delay:900"),
+            ],
+            [
+                callback_button(("✓ " if delay == 1800 else "") + "30 мин", "delay:1800"),
+                callback_button(("✓ " if delay == 3600 else "") + "1 час", "delay:3600"),
+                callback_button("Все объекты", "status:all:0"),
+            ],
+        ]
+    )
+
+
+def parse_delay_value(data: str) -> int:
+    try:
+        return normalize_delay(data.split(":", 1)[1])
+    except IndexError:
+        return DEFAULT_OFFLINE_DELAY_SECONDS
+
+
+def get_user_preferences(tg_config: TelegramConfig, user_id: int) -> dict[str, Any]:
+    data = load_users_payload(tg_config)
+    raw = data.get("preferences", {}).get(str(user_id), {})
+    return {
+        "theme": normalize_theme(str(raw.get("theme") or DEFAULT_THEME)),
+        "offline_delay_seconds": normalize_delay(raw.get("offline_delay_seconds", DEFAULT_OFFLINE_DELAY_SECONDS)),
+    }
+
+
+def set_user_theme(tg_config: TelegramConfig, user_id: int, theme: str) -> None:
+    update_user_preferences(tg_config, user_id, {"theme": normalize_theme(theme)})
+
+
+def set_user_offline_delay(tg_config: TelegramConfig, user_id: int, delay_seconds: int) -> None:
+    update_user_preferences(tg_config, user_id, {"offline_delay_seconds": normalize_delay(delay_seconds)})
+
+
+def update_user_preferences(tg_config: TelegramConfig, user_id: int, values: dict[str, Any]) -> None:
+    data = load_users_payload(tg_config)
+    preferences = data.setdefault("preferences", {})
+    user_preferences = preferences.setdefault(str(user_id), {})
+    user_preferences.update(values)
+    save_users_payload(tg_config, data)
+
+
+def sanitize_preferences(values: dict[str, Any]) -> dict[str, Any]:
+    clean: dict[str, Any] = {}
+    if "theme" in values:
+        clean["theme"] = normalize_theme(str(values["theme"]))
+    if "offline_delay_seconds" in values:
+        clean["offline_delay_seconds"] = normalize_delay(values["offline_delay_seconds"])
+    return clean
+
+
+def load_users_payload(tg_config: TelegramConfig) -> dict[str, Any]:
+    if not tg_config.users_file.exists():
+        load_user_access(tg_config)
+    try:
+        data = json.loads(tg_config.users_file.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("allowed", sorted(set(tg_config.allowed_user_ids) | set(tg_config.admin_user_ids)))
+    data.setdefault("admins", sorted(tg_config.admin_user_ids))
+    data.setdefault("preferences", {})
+    return data
+
+
+def save_users_payload(tg_config: TelegramConfig, data: dict[str, Any]) -> None:
+    tg_config.users_file.parent.mkdir(parents=True, exist_ok=True)
+    tg_config.users_file.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        tg_config.users_file.chmod(0o600)
+    except OSError:
+        pass
+
+
+def normalize_theme(theme: str) -> str:
+    return theme if theme in THEMES else DEFAULT_THEME
+
+
+def normalize_delay(value: Any) -> int:
+    try:
+        delay = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_OFFLINE_DELAY_SECONDS
+    return max(0, min(delay, 86400))
+
+
+def load_notification_state(tg_config: TelegramConfig) -> dict[str, Any]:
+    path = notification_state_path(tg_config)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_notification_state(tg_config: TelegramConfig, state: dict[str, Any]) -> None:
+    path = notification_state_path(tg_config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def notification_state_path(tg_config: TelegramConfig) -> Path:
+    return tg_config.users_file.with_name("telegram_notifications.json")
 
 
 def send_users(tg_config: TelegramConfig, chat_id: int) -> None:
@@ -587,6 +1011,7 @@ def admin_keyboard() -> dict[str, Any]:
     return inline_keyboard(
         [
             [callback_button("Пользователи", "admin:users")],
+            [callback_button("Проверить IP-заметки", "admin:ipnotes")],
             [callback_button("Скачать backup", "admin:backup")],
             [callback_button("Все объекты", "status:all:0")],
         ]
@@ -661,6 +1086,24 @@ def send_document(tg_config: TelegramConfig, chat_id: int, path: Path, caption: 
     fields = {"chat_id": str(chat_id), "caption": caption}
     files = {"document": path}
     telegram_multipart_request(tg_config, "sendDocument", fields, files)
+
+
+def send_animation(
+    tg_config: TelegramConfig,
+    chat_id: int,
+    path: Path,
+    caption: str = "",
+    reply_markup: dict[str, Any] | None = None,
+) -> None:
+    fields = {
+        "chat_id": str(chat_id),
+        "caption": caption,
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    files = {"animation": path}
+    telegram_multipart_request(tg_config, "sendAnimation", fields, files)
 
 
 def edit_message(

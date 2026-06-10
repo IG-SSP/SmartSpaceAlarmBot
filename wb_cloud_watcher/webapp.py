@@ -40,11 +40,13 @@ def start_webapp_server(
     tg_config: Any,
     webapp_config: WebAppConfig,
     is_allowed_user: Callable[[int], bool],
+    get_user_preferences: Callable[[int], dict[str, Any]] | None = None,
+    set_user_preferences: Callable[[int, dict[str, Any]], None] | None = None,
 ) -> ThreadingHTTPServer | None:
     if not webapp_config.public_url:
         return None
 
-    handler = build_handler(wb_config, tg_config, webapp_config, is_allowed_user)
+    handler = build_handler(wb_config, tg_config, webapp_config, is_allowed_user, get_user_preferences, set_user_preferences)
     server = ThreadingHTTPServer((webapp_config.host, webapp_config.port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -57,6 +59,8 @@ def build_handler(
     tg_config: Any,
     webapp_config: WebAppConfig,
     is_allowed_user: Callable[[int], bool],
+    get_user_preferences: Callable[[int], dict[str, Any]] | None = None,
+    set_user_preferences: Callable[[int, dict[str, Any]], None] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class WebAppHandler(BaseHTTPRequestHandler):
         server_version = "SmartSpaceAlarmBotWebApp/0.1"
@@ -86,13 +90,50 @@ def build_handler(
             if parsed.path == "/api/me":
                 self.handle_me()
                 return
+            if parsed.path == "/api/preferences":
+                self.handle_preferences()
+                return
+            self.send_json(404, {"error": "not_found"})
+
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/preferences":
+                self.handle_update_preferences()
+                return
             self.send_json(404, {"error": "not_found"})
 
         def handle_me(self) -> None:
             user = self.authorize()
             if user is None:
                 return
-            self.send_json(200, {"user": user})
+            preferences = get_user_preferences(user["id"]) if get_user_preferences else {}
+            self.send_json(200, {"user": user, "preferences": preferences})
+
+        def handle_preferences(self) -> None:
+            user = self.authorize()
+            if user is None:
+                return
+            preferences = get_user_preferences(user["id"]) if get_user_preferences else {}
+            self.send_json(200, {"preferences": preferences})
+
+        def handle_update_preferences(self) -> None:
+            user = self.authorize()
+            if user is None:
+                return
+            if set_user_preferences is None or get_user_preferences is None:
+                self.send_json(503, {"error": "preferences_unavailable"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except Exception:
+                self.send_json(400, {"error": "bad_json"})
+                return
+            if not isinstance(payload, dict):
+                self.send_json(400, {"error": "bad_json"})
+                return
+            set_user_preferences(user["id"], payload)
+            self.send_json(200, {"preferences": get_user_preferences(user["id"])})
 
         def handle_controllers(self) -> None:
             user = self.authorize()
@@ -108,6 +149,8 @@ def build_handler(
             for controller in sorted(controllers, key=lambda item: (item.online, item.name.lower())):
                 item = controller_to_state(controller)
                 item["remote_url"] = remote_access_url(controller.controller_id)
+                item["local_url"] = f"http://{controller.local_ip}/" if controller.local_ip else None
+                item["access_url"] = item["local_url"] if not controller.online and item["local_url"] else item["remote_url"]
                 payload.append(item)
 
             total = len(payload)

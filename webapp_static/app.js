@@ -4,6 +4,10 @@ const state = {
   filter: "all",
   query: "",
   loading: false,
+  preferences: {
+    theme: "dark",
+    offline_delay_seconds: 0,
+  },
 };
 
 const elements = {
@@ -16,6 +20,8 @@ const elements = {
   controllerList: document.querySelector("#controllerList"),
   template: document.querySelector("#controllerTemplate"),
   segments: Array.from(document.querySelectorAll(".segment")),
+  themeButtons: Array.from(document.querySelectorAll("[data-theme]")),
+  delaySelect: document.querySelector("#delaySelect"),
 };
 
 tg?.ready();
@@ -28,6 +34,9 @@ elements.searchInput.addEventListener("input", (event) => {
 });
 
 for (const button of elements.segments) {
+  if (!button.dataset.filter) {
+    continue;
+  }
   button.addEventListener("click", () => {
     state.filter = button.dataset.filter;
     for (const item of elements.segments) {
@@ -37,7 +46,71 @@ for (const button of elements.segments) {
   });
 }
 
-loadControllers();
+for (const button of elements.themeButtons) {
+  button.addEventListener("click", () => {
+    savePreferences({ theme: button.dataset.theme });
+  });
+}
+
+elements.delaySelect.addEventListener("change", () => {
+  savePreferences({ offline_delay_seconds: Number(elements.delaySelect.value) });
+});
+
+boot();
+
+async function boot() {
+  await loadPreferences();
+  await loadControllers();
+}
+
+async function loadPreferences() {
+  if (!tg?.initData) {
+    applyPreferences(state.preferences);
+    return;
+  }
+  try {
+    const response = await fetch("/api/preferences", {
+      headers: authHeaders(),
+    });
+    const payload = await response.json();
+    if (response.ok && payload.preferences) {
+      state.preferences = { ...state.preferences, ...payload.preferences };
+    }
+  } finally {
+    applyPreferences(state.preferences);
+  }
+}
+
+async function savePreferences(values) {
+  state.preferences = { ...state.preferences, ...values };
+  applyPreferences(state.preferences);
+  try {
+    const response = await fetch("/api/preferences", {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(values),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.message || payload.error || "Ошибка сохранения");
+    }
+    state.preferences = { ...state.preferences, ...payload.preferences };
+    applyPreferences(state.preferences);
+  } catch (error) {
+    elements.statusLine.textContent = `Настройки не сохранены: ${error.message}`;
+  }
+}
+
+function applyPreferences(preferences) {
+  document.documentElement.dataset.theme = preferences.theme || "dark";
+  for (const button of elements.themeButtons) {
+    button.classList.toggle("is-active", button.dataset.theme === preferences.theme);
+  }
+  elements.delaySelect.value = String(preferences.offline_delay_seconds ?? 0);
+}
 
 async function loadControllers() {
   if (state.loading) {
@@ -54,9 +127,7 @@ async function loadControllers() {
 
   try {
     const response = await fetch("/api/controllers", {
-      headers: {
-        Authorization: `tma ${tg.initData}`,
-      },
+      headers: authHeaders(),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -109,12 +180,60 @@ function renderControllers() {
     node.classList.toggle("is-offline", !controller.online);
     node.querySelector("h2").textContent = controller.name || controller.id;
     node.querySelector(".serial").textContent = controller.id;
+    node.querySelector(".organization").textContent = controller.organization_id
+      ? `Организация: ${shortId(controller.organization_id)}`
+      : "";
     node.querySelector(".last-seen").textContent = controller.last_seen
       ? `Последний пинг: ${formatDate(controller.last_seen)}`
       : "Последний пинг: нет данных";
-    node.querySelector(".open-link").href = controller.remote_url;
+    const openLink = node.querySelector(".open-link");
+    const pingButton = node.querySelector(".ping-button");
+    const hasLocalAccess = !controller.online && controller.local_url;
+    openLink.href = controller.access_url || controller.remote_url;
+    openLink.textContent = hasLocalAccess ? "Локально" : "Открыть";
+    pingButton.hidden = !hasLocalAccess;
+    pingButton.addEventListener("click", () => pingLocalAccess(controller));
     elements.controllerList.append(node);
   }
+}
+
+async function pingLocalAccess(controller) {
+  if (!controller.local_url) {
+    return;
+  }
+  const ok = window.confirm("Перед проверкой включите VPN до объекта. Проверить локальный веб-интерфейс сейчас?");
+  if (!ok) {
+    return;
+  }
+
+  const startedAt = performance.now();
+  try {
+    await probeImage(`${controller.local_url.replace(/\/$/, "")}/favicon.ico?_=${Date.now()}`, 3500);
+    const elapsed = Math.max(1, Math.round(performance.now() - startedAt));
+    elements.statusLine.textContent = `Локальный доступ ответил: ${controller.local_ip}, примерно ${elapsed} мс.`;
+  } catch (error) {
+    elements.statusLine.textContent = `Локальный доступ не ответил. Проверьте VPN до объекта и адрес ${controller.local_ip}.`;
+  }
+}
+
+function probeImage(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const timer = window.setTimeout(() => {
+      image.onload = null;
+      image.onerror = null;
+      reject(new Error("timeout"));
+    }, timeoutMs);
+    image.onload = () => {
+      window.clearTimeout(timer);
+      resolve();
+    };
+    image.onerror = () => {
+      window.clearTimeout(timer);
+      resolve();
+    };
+    image.src = url;
+  });
 }
 
 function renderError(message) {
@@ -138,4 +257,14 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function authHeaders() {
+  return {
+    Authorization: `tma ${tg.initData}`,
+  };
+}
+
+function shortId(value) {
+  return value.length > 12 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
 }

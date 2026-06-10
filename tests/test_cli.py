@@ -7,6 +7,7 @@ from wb_cloud_watcher.cli import (
     Controller,
     Config,
     current_auth_header,
+    extract_user_defined_ip,
     fallback_auth_header,
     fetch_controller_payloads,
     find_changes,
@@ -33,6 +34,11 @@ class CliTests(unittest.TestCase):
         payload = {"data": {"controllers": [{"id": "wb-1"}]}}
 
         self.assertEqual(get_path(payload, "data.controllers.0.id"), "wb-1")
+
+    def test_extract_user_defined_ip_reads_ip_note_with_mask(self):
+        raw = {"userDefinedData": [{"label": "IP", "value": "192.168.1.1/16"}]}
+
+        self.assertEqual(extract_user_defined_ip(raw), "192.168.1.1")
 
     def test_find_changes_detects_transitions(self):
         previous = {"wb-1": {"online": True}}

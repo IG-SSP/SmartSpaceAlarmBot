@@ -43,6 +43,27 @@
         <input id="searchInput" type="search" placeholder="Поиск по имени или serial" autocomplete="off" />
       </section>
 
+      <section class="settings-panel" aria-label="Настройки уведомлений">
+        <div class="settings-row">
+          <span>Тема</span>
+          <div class="segmented compact">
+            <button class="segment" type="button" data-theme="dark">Темная</button>
+            <button class="segment" type="button" data-theme="light">Светлая</button>
+            <button class="segment" type="button" data-theme="matrix">Матрица</button>
+          </div>
+        </div>
+        <div class="settings-row">
+          <span>Уведомлять через</span>
+          <select id="delaySelect">
+            <option value="0">сразу</option>
+            <option value="300">5 минут</option>
+            <option value="900">15 минут</option>
+            <option value="1800">30 минут</option>
+            <option value="3600">1 час</option>
+          </select>
+        </div>
+      </section>
+
       <p class="status-line" id="statusLine">Загрузка...</p>
       <section class="controller-list" id="controllerList" aria-live="polite"></section>
     </main>
@@ -54,10 +75,14 @@
           <div class="controller-text">
             <h2></h2>
             <p class="serial"></p>
+            <p class="organization"></p>
             <p class="last-seen"></p>
           </div>
         </div>
-        <a class="open-link" target="_blank" rel="noreferrer">Открыть</a>
+        <div class="actions">
+          <button class="ping-button" type="button">Пинг</button>
+          <a class="open-link" target="_blank" rel="noreferrer">Открыть</a>
+        </div>
       </article>
     </template>
 

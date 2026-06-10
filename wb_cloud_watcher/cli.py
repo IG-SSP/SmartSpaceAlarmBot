@@ -46,6 +46,8 @@ class Controller:
     name: str
     online: bool
     last_seen: str | None = None
+    local_ip: str | None = None
+    organization_id: str | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,6 +146,8 @@ def fetch_controllers(config: Config) -> list[Controller]:
         name_value = get_path(raw, config.name_field, default=controller_id)
         online_value = get_path(raw, config.online_field)
         last_seen_value = get_path(raw, config.last_seen_field, default=None) if config.last_seen_field else None
+        local_ip = extract_user_defined_ip(raw)
+        organization_id = extract_organization_id(raw)
 
         controllers.append(
             Controller(
@@ -151,6 +155,8 @@ def fetch_controllers(config: Config) -> list[Controller]:
                 name=str(name_value or controller_id),
                 online=parse_online(online_value),
                 last_seen=str(last_seen_value) if last_seen_value is not None else None,
+                local_ip=local_ip,
+                organization_id=organization_id,
             )
         )
     return controllers
@@ -209,6 +215,44 @@ def current_auth_header(config: Config) -> str:
     return auth_header or config.auth_header
 
 
+def extract_user_defined_ip(raw: dict[str, Any]) -> str | None:
+    values = raw.get("userDefinedData")
+    if not isinstance(values, list):
+        return None
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip().casefold()
+        if label != "ip":
+            continue
+        return normalize_ip_value(str(item.get("value") or ""))
+    return None
+
+
+def normalize_ip_value(value: str) -> str | None:
+    ip = value.split("/", 1)[0].strip()
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return None
+    try:
+        numbers = [int(part) for part in parts]
+    except ValueError:
+        return None
+    if any(number < 0 or number > 255 for number in numbers):
+        return None
+    return ".".join(str(number) for number in numbers)
+
+
+def extract_organization_id(raw: dict[str, Any]) -> str | None:
+    organization = raw.get("organization")
+    if isinstance(organization, dict):
+        value = organization.get("id")
+        return str(value) if value else None
+    if organization:
+        return str(organization)
+    return None
+
+
 def get_json(url: str, auth_header: str, timeout_seconds: int) -> Any:
     try:
         return get_json_with_header(url, auth_header, timeout_seconds)
@@ -225,12 +269,59 @@ def get_json(url: str, auth_header: str, timeout_seconds: int) -> Any:
 
 
 def get_json_with_header(url: str, auth_header: str, timeout_seconds: int) -> Any:
+    return request_json_with_header("GET", url, auth_header, timeout_seconds)
+
+
+def patch_json_authenticated(config: Config, url: str, payload: dict[str, Any]) -> Any:
+    auth_header = current_auth_header(config)
+    refresh_token = env("WB_REFRESH_TOKEN", config.refresh_token)
+    try:
+        return request_json("PATCH", url, auth_header, config.timeout_seconds, payload)
+    except RuntimeError as exc:
+        if "HTTP 401" not in str(exc) or not refresh_token:
+            raise
+
+    access, new_refresh = refresh_access_token(refresh_token, config.timeout_seconds)
+    if new_refresh:
+        refresh_token = new_refresh
+    auth_scheme = env("WB_AUTH_SCHEME", config.auth_scheme)
+    auth_header = f"Authorization: {auth_scheme} {access}"
+    persist_tokens(config.env_path, access, refresh_token, auth_scheme)
+    return request_json("PATCH", url, auth_header, config.timeout_seconds, payload)
+
+
+def request_json(method: str, url: str, auth_header: str, timeout_seconds: int, payload: dict[str, Any] | None = None) -> Any:
+    try:
+        return request_json_with_header(method, url, auth_header, timeout_seconds, payload)
+    except HTTPError as exc:
+        fallback_header = fallback_auth_header(auth_header)
+        if exc.code != 401 or not fallback_header:
+            raise format_http_error("API", exc) from exc
+        try:
+            return request_json_with_header(method, url, fallback_header, timeout_seconds, payload)
+        except HTTPError as fallback_exc:
+            raise format_http_error("API", fallback_exc) from fallback_exc
+    except URLError as exc:
+        raise RuntimeError(f"API request failed: {exc.reason}") from exc
+
+
+def request_json_with_header(
+    method: str,
+    url: str,
+    auth_header: str,
+    timeout_seconds: int,
+    payload: dict[str, Any] | None = None,
+) -> Any:
     headers = {"Accept": "application/json", "User-Agent": "wb-cloud-watcher/0.1"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
     if auth_header:
         name, value = parse_header(auth_header)
         headers[name] = value
 
-    request = Request(url, headers=headers)
+    request = Request(url, data=data, headers=headers, method=method)
     with urlopen(request, timeout=timeout_seconds) as response:
         body = response.read().decode("utf-8")
 
@@ -362,6 +453,20 @@ def remote_access_url(serial_number: str) -> str:
     return f"https://wirenboard.cloud/connect/http/{quote(serial_number, safe='')}/"
 
 
+def local_access_url(controller: Controller) -> str | None:
+    if not controller.local_ip:
+        return None
+    return f"http://{controller.local_ip}/"
+
+
+def preferred_access_url(controller: Controller) -> str:
+    if not controller.online:
+        local_url = local_access_url(controller)
+        if local_url:
+            return local_url
+    return remote_access_url(controller.controller_id)
+
+
 def load_state(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -385,6 +490,8 @@ def controller_to_state(controller: Controller) -> dict[str, Any]:
         "name": controller.name,
         "online": controller.online,
         "last_seen": controller.last_seen,
+        "local_ip": controller.local_ip,
+        "organization_id": controller.organization_id,
         "checked_at": int(time.time()),
     }
 

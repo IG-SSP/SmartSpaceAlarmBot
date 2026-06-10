@@ -11,11 +11,15 @@ from wb_cloud_watcher.bot import (
     format_controller_detail,
     format_controller_list,
     format_telegram_notification_body,
+    get_user_preferences,
+    has_ip_note,
     get_allowed_user_ids,
     get_admin_user_ids,
     parse_page,
     remove_user_command,
     parse_allowed_user_ids,
+    set_user_theme,
+    set_user_offline_delay,
 )
 from wb_cloud_watcher.cli import Controller
 
@@ -23,6 +27,10 @@ from wb_cloud_watcher.cli import Controller
 class BotTests(unittest.TestCase):
     def test_parse_allowed_user_ids_supports_commas_and_semicolons(self):
         self.assertEqual(parse_allowed_user_ids("1, 2;3"), {1, 2, 3})
+
+    def test_has_ip_note_detects_existing_note(self):
+        self.assertTrue(has_ip_note([{"label": "IP", "value": "192.168.1.1/16"}]))
+        self.assertFalse(has_ip_note([{"label": "Location", "value": "Office"}]))
 
     def test_find_controller_matches_serial_and_name_part(self):
         controllers = [
@@ -110,6 +118,22 @@ class BotTests(unittest.TestCase):
 
             self.assertEqual(get_allowed_user_ids(tg_config), {1, 2})
             self.assertIn("Админов нельзя удалить", messages[1][2])
+
+    def test_user_preferences_are_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tg_config = TelegramConfig(
+                bot_token="token",
+                allowed_user_ids={1},
+                admin_user_ids={2},
+                users_file=Path(tmp) / "users.json",
+                backup_dir=Path(tmp) / "backups",
+                timeout_seconds=30,
+            )
+
+            set_user_theme(tg_config, 1, "matrix")
+            set_user_offline_delay(tg_config, 1, 900)
+
+            self.assertEqual(get_user_preferences(tg_config, 1), {"theme": "matrix", "offline_delay_seconds": 900})
 
     def test_build_multipart_body_contains_file(self):
         with tempfile.TemporaryDirectory() as tmp:
