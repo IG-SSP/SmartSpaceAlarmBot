@@ -391,6 +391,12 @@ def handle_callback(wb_config: Config, tg_config: TelegramConfig, callback: dict
             result = add_user_by_identifier(tg_config, str(requested_user_id))
             text = f"Пользователь разрешен: <code>{requested_user_id}</code>" if result.get("ok") else html.escape(str(result.get("message") or result.get("error")))
             edit_message(tg_config, chat_id, message_id, text, admin_keyboard())
+            send_message(tg_config, chat_id, text, admin_keyboard())
+            if isinstance(callback_id, str):
+                try:
+                    telegram_request(tg_config, "answerCallbackQuery", {"callback_query_id": callback_id, "text": "Пользователь добавлен" if result.get("ok") else "Не удалось добавить", "show_alert": False})
+                except Exception:
+                    pass
     elif data.startswith("controller:"):
         serial_number = data.split(":", 1)[1]
         edit_controller(wb_config, tg_config, chat_id, message_id, serial_number)

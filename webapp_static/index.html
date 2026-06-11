@@ -20,15 +20,15 @@
       </header>
 
       <section class="summary-grid" aria-label="Сводка">
-        <article class="summary-item">
+        <article class="summary-item" data-summary-filter="all" role="button" tabindex="0">
           <span class="summary-label">Всего</span>
           <strong id="totalCount">-</strong>
         </article>
-        <article class="summary-item is-ok">
+        <article class="summary-item is-ok" data-summary-filter="online" role="button" tabindex="0">
           <span class="summary-label">В сети</span>
           <strong id="onlineCount">-</strong>
         </article>
-        <article class="summary-item is-alert">
+        <article class="summary-item is-alert" data-summary-filter="offline" role="button" tabindex="0">
           <span class="summary-label">Не в сети</span>
           <strong id="offlineCount">-</strong>
         </article>

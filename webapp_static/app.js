@@ -10,6 +10,7 @@ const state = {
   users: [],
   denied: false,
   deniedUserId: null,
+  accessRequestSent: false,
   preferences: {
     theme: "dark",
     offline_delay_seconds: 0,
@@ -21,6 +22,7 @@ const elements = {
   totalCount: document.querySelector("#totalCount"),
   onlineCount: document.querySelector("#onlineCount"),
   offlineCount: document.querySelector("#offlineCount"),
+  summaryItems: Array.from(document.querySelectorAll("[data-summary-filter]")),
   searchInput: document.querySelector("#searchInput"),
   statusLine: document.querySelector("#statusLine"),
   controllerList: document.querySelector("#controllerList"),
@@ -42,8 +44,18 @@ const elements = {
 tg?.ready();
 tg?.expand();
 
-elements.refreshButton.addEventListener("click", () => loadControllers());
+elements.refreshButton.addEventListener("click", () => {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
+  loadControllers();
+});
 elements.searchInput.addEventListener("input", (event) => {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   state.query = event.target.value.trim().toLowerCase();
   renderControllers();
 });
@@ -53,11 +65,25 @@ for (const button of elements.segments) {
     continue;
   }
   button.addEventListener("click", () => {
+    if (state.denied) {
+      renderAccessDenied();
+      return;
+    }
     state.filter = button.dataset.filter;
     for (const item of elements.segments) {
       item.classList.toggle("is-active", item === button);
     }
     renderControllers();
+  });
+}
+
+for (const item of elements.summaryItems) {
+  item.addEventListener("click", () => applyFilter(item.dataset.summaryFilter));
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      applyFilter(item.dataset.summaryFilter);
+    }
   });
 }
 
@@ -122,6 +148,10 @@ async function loadMe() {
 }
 
 async function loadPreferences() {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   if (!tg?.initData) {
     applyPreferences(state.preferences);
     return;
@@ -140,6 +170,10 @@ async function loadPreferences() {
 }
 
 async function savePreferences(values) {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   state.preferences = { ...state.preferences, ...values };
   applyPreferences(state.preferences);
   try {
@@ -171,6 +205,10 @@ function applyPreferences(preferences) {
 }
 
 function setView(view) {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   state.view = view;
   for (const tab of elements.viewTabs) {
     tab.classList.toggle("is-active", tab.dataset.view === view);
@@ -186,7 +224,26 @@ function setView(view) {
   }
 }
 
+function applyFilter(filter) {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
+  state.filter = filter || "all";
+  setView("status");
+  for (const item of elements.segments) {
+    if (item.dataset.filter) {
+      item.classList.toggle("is-active", item.dataset.filter === state.filter);
+    }
+  }
+  renderControllers();
+}
+
 async function loadControllers() {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   if (state.loading) {
     return;
   }
@@ -204,6 +261,12 @@ async function loadControllers() {
       headers: authHeaders(),
     });
     const payload = await response.json();
+    if (response.status === 403) {
+      state.denied = true;
+      state.deniedUserId = payload.user_id || state.deniedUserId || tg.initDataUnsafe?.user?.id || null;
+      renderAccessDenied();
+      return;
+    }
     if (!response.ok) {
       throw new Error(payload.message || payload.error || "Ошибка запроса");
     }
@@ -219,6 +282,10 @@ async function loadControllers() {
 }
 
 async function loadHistory() {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   if (!tg?.initData) {
     return;
   }
@@ -236,6 +303,10 @@ async function loadHistory() {
 }
 
 async function loadUsers() {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   if (!state.isAdmin) {
     return;
   }
@@ -248,6 +319,10 @@ async function loadUsers() {
 }
 
 async function changeUser(method) {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   const value = elements.userInput.value.trim();
   if (!value) {
     return;
@@ -276,6 +351,10 @@ function renderSummary(summary) {
 }
 
 function renderControllers() {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   const visible = state.controllers.filter((controller) => {
     if (state.filter === "online" && !controller.online) {
       return false;
@@ -320,6 +399,10 @@ function renderControllers() {
 }
 
 function renderHistory() {
+  if (state.denied) {
+    renderAccessDenied();
+    return;
+  }
   elements.historyList.replaceChildren();
   if (state.history.length === 0) {
     const empty = document.createElement("div");
@@ -367,10 +450,14 @@ function renderError(message) {
 }
 
 function renderAccessDenied(message = "") {
-  setView("status");
+  state.view = "status";
+  for (const panel of elements.panels) {
+    panel.hidden = panel.dataset.panel !== "status";
+  }
   for (const tab of elements.viewTabs) {
     tab.hidden = true;
   }
+  elements.refreshButton.disabled = false;
   elements.statusLine.textContent = "";
   elements.controllerList.replaceChildren();
   renderSummary({ total: "-", online: "-", offline: "-" });
@@ -385,7 +472,8 @@ function renderAccessDenied(message = "") {
   id.textContent = state.deniedUserId ? `Ваш ID: ${state.deniedUserId}` : "Telegram ID не получен";
   const button = document.createElement("button");
   button.type = "button";
-  button.textContent = "Отправить заявку администратору";
+  button.textContent = state.accessRequestSent ? "Заявка отправлена" : "Отправить заявку администратору";
+  button.disabled = state.accessRequestSent;
   button.addEventListener("click", requestAccess);
   const note = document.createElement("p");
   note.className = "denied-note";
@@ -395,6 +483,8 @@ function renderAccessDenied(message = "") {
 }
 
 async function requestAccess() {
+  state.accessRequestSent = true;
+  renderAccessDenied("Отправляю заявку администраторам...");
   try {
     const response = await fetch("/api/access-request", {
       method: "POST",
@@ -406,6 +496,7 @@ async function requestAccess() {
     }
     renderAccessDenied("Заявка отправлена администраторам.");
   } catch (error) {
+    state.accessRequestSent = false;
     renderAccessDenied(`Не удалось отправить заявку: ${error.message}`);
   }
 }

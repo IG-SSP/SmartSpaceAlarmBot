@@ -114,6 +114,12 @@ h1 {
   border-radius: 8px;
   background: var(--panel);
   padding: 12px;
+  cursor: pointer;
+}
+
+.summary-item:focus-visible {
+  outline: 2px solid var(--button);
+  outline-offset: 2px;
 }
 
 .summary-item strong {
@@ -371,6 +377,11 @@ select {
   background: var(--button);
   color: var(--button-text);
   cursor: pointer;
+}
+
+.denied-card button:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .denied-card .denied-note:empty {
